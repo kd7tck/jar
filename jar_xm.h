@@ -82,6 +82,7 @@ typedef struct jar_xm_context_s jar_xm_context_t;
  * @returns 3 unable to open input file
  * @returns 4 fseek() failed
  * @returns 5 fread() failed
+ * @returns 6 unkown error
  *
  * @deprecated This function is unsafe!
  * @see jar_xm_create_context_safe()
@@ -2626,6 +2627,7 @@ int jar_xm_create_context_from_file(jar_xm_context_t** ctx, uint32_t rate, const
 
     default:
         FATAL("could not create context: unknown error\n");
+        return 6;
         break;
 
     }
