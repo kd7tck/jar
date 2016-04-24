@@ -1,4 +1,4 @@
-// jar_XM.h - v0.01 - public domain - Joshua Reisenauer, MAR 2016
+// jar_xm.h - v0.01 - public domain - Joshua Reisenauer, MAR 2016
 //
 // HISTORY:
 //
@@ -10,9 +10,9 @@
 // In ONE source file, put:
 //
 //    #define JAR_XM_IMPLEMENTATION
-//    #include "jar_XM.h"
+//    #include "jar_xm.h"
 //
-// Other source files should just include jar_XM.h
+// Other source files should just include jar_xm.h
 //
 // SAMPLE CODE:
 //
@@ -41,7 +41,7 @@
 //
 // Author: Romain "Artefact2" Dalmaso <artefact2@gmail.com>
 // Contributor: Dan Spencer <dan@atomicpotato.net>
-// Repackaged into jar_XM.h By: Joshua Reisenauer <kd7tck@gmail.com>
+// Repackaged into jar_xm.h By: Joshua Adam Reisenauer <kd7tck@gmail.com>
 // This program is free software. It comes without any warranty, to the
 // extent permitted by applicable law. You can redistribute it and/or
 // modify it under the terms of the Do What The Fuck You Want To Public
@@ -52,7 +52,7 @@
 #define INCLUDE_JAR_XM_H
 
 #define JAR_XM_DEBUG 0
-#define JAR_XM_LINEAR_INTERPOLATION 1 // speed increase with decrease in quality
+#define JAR_XM_LINEAR_INTERPOLATION 0 // speed increase with decrease in quality
 //#define JAR_XM_DEFENSIVE 0
 #define JAR_XM_RAMPING 1
 
@@ -145,7 +145,7 @@ void jar_xm_generate_samples_16bit(jar_xm_context_t* ctx, short* output, size_t 
     free(musicBuffer2);
 }
 
-/** Play the module, resample from 32 bit to 16 bit, and put the sound samples in an output buffer.
+/** Play the module, resample from 32 bit to 8 bit, and put the sound samples in an output buffer.
  *
  * @param output buffer of 2*numsamples elements
  * @param numsamples number of samples to generate
