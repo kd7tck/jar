@@ -52,8 +52,8 @@
 #define INCLUDE_JAR_XM_H
 
 #define JAR_XM_DEBUG 0
-#define JAR_XM_LINEAR_INTERPOLATION 0 // speed increase with decrease in quality
-//#define JAR_XM_DEFENSIVE 0
+#define JAR_XM_LINEAR_INTERPOLATION 1 // speed increase with decrease in quality
+#define JAR_XM_DEFENSIVE 1
 #define JAR_XM_RAMPING 1
 
 #include <stdio.h>
