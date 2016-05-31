@@ -84,7 +84,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
-#include <sys/stat.h>
 
 
 
@@ -195,7 +194,8 @@ typedef struct {
     mint    stereo_separation;
     mint    bits;
     mint    filter;
-
+    
+    unsigned char *modfile; // the raw mod file
 } modcontext;
 
 //
@@ -247,7 +247,7 @@ bool jar_mod_load(modcontext * modctx, void * mod_data, int mod_data_size);
 void jar_mod_fillbuffer(modcontext * modctx, short * outbuffer, unsigned long nbsample, jar_mod_tracker_buffer_state * trkbuf);
 void jar_mod_unload(modcontext * modctx);
 long jar_mod_load_file(modcontext * modctx, char* filename);
-long jar_mod_total_samples(modcontext * modctx);
+long jar_mod_current_samples(modcontext * modctx);
 long jar_mod_max_samples(modcontext * modctx);
 
 #ifdef __cplusplus
@@ -1462,6 +1462,11 @@ void jar_mod_unload( modcontext * modctx)
 {
     if(modctx)
     {
+        if(modctx->modfile)
+        {
+            free(modctx->modfile);
+            modctx->modfile = 0;
+        }
         memclear(&modctx->song,0,sizeof(modctx->song));
         memclear(&modctx->sampledata,0,sizeof(modctx->sampledata));
         memclear(&modctx->patterndata,0,sizeof(modctx->patterndata));
@@ -1490,27 +1495,34 @@ void jar_mod_unload( modcontext * modctx)
 
 long jar_mod_load_file(modcontext * modctx, char* filename)
 {
-    long fsize = 0;
-    FILE *f = fopen(filename, "r");
+    int fsize = 0;
+    if(modctx->modfile)
+    {
+        free(modctx->modfile);
+        modctx->modfile = 0;
+    }
+    
+    FILE *f = fopen(filename, "rb");
     if(f)
     {
-        struct stat st;
-        fstat(f, &st);
-        fsize = st.st_size;
+        fseek(f,0,SEEK_END);
+        fsize = ftell(f);
+        fseek(f,0,SEEK_SET);
         
-        char *str = malloc(fsize);
-        fread(str, 1, fsize, f);
-        fclose(f);
-        
-        if(!jar_mod_load(modctx, str, fsize)) 
-            fsize = 0;
-    
-        free(str);
+        if(fsize && fsize < 32*1024*1024)
+        {
+            modctx->modfile = malloc(fsize);
+            memset(modctx->modfile, 0, fsize);
+            fread(modctx->modfile, fsize, 1, f);
+            fclose(f);
+            
+            if(!jar_mod_load(modctx, (void*)modctx->modfile, fsize)) fsize = 0;
+        } else fsize = 0;
     }
     return fsize;
 }
 
-long jar_mod_total_samples(modcontext * modctx)
+long jar_mod_current_samples(modcontext * modctx)
 {
     if(modctx)
         return modctx->samplenb;
