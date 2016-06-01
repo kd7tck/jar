@@ -15,25 +15,25 @@
 // Other source files should just include jar_mod.h
 //
 // SAMPLE CODE:
-// modcontext* modctx;
+// modcontext modctx;
 // short samplebuff[4096];
 // bool bufferFull = false;
 // int intro_load(void)
 // {
-//     jar_mod_init(modctx);
-//     jar_mod_load_file(modctx, "file.mod");
+//     jar_mod_init(&modctx);
+//     jar_mod_load_file(&modctx, "file.mod");
 //     return 1;
 // }
 // int intro_unload(void)
 // {
-//     jar_mod_unload(modctx);
+//     jar_mod_unload(&modctx);
 //     return 1;
 // }
 // int intro_tick(long counter)
 // {
 //     if(!bufferFull)
 //     {
-//         jar_mod_fillbuffer(modctx, samplebuff, 4096, 0);
+//         jar_mod_fillbuffer(&modctx, samplebuff, 4096, 0);
 //         bufferFull=true;
 //     }
 //     if(IsKeyDown(KEY_ENTER))
@@ -127,7 +127,7 @@ typedef struct {
 typedef struct {
     muchar  title[20];
     sample  samples[31];
-    muchar  length;
+    muchar  length; // length of tablepos
     muchar  protracker;
     muchar  patterntable[128];
     muchar  signature[4];
@@ -195,7 +195,9 @@ typedef struct {
     mint    bits;
     mint    filter;
     
-    unsigned char *modfile; // the raw mod file
+    muchar *modfile; // the raw mod file
+    mulong  modfilesize;
+    muint   loopcount;
 } modcontext;
 
 //
@@ -241,14 +243,14 @@ typedef struct jar_mod_tracker_buffer_state_
 
 
 
-bool jar_mod_init(modcontext * modctx);
-bool jar_mod_setcfg(modcontext * modctx, int samplerate, int bits, int stereo, int stereo_separation, int filter);
-bool jar_mod_load(modcontext * modctx, void * mod_data, int mod_data_size);
-void jar_mod_fillbuffer(modcontext * modctx, short * outbuffer, unsigned long nbsample, jar_mod_tracker_buffer_state * trkbuf);
-void jar_mod_unload(modcontext * modctx);
-long jar_mod_load_file(modcontext * modctx, char* filename);
-long jar_mod_current_samples(modcontext * modctx);
-long jar_mod_max_samples(modcontext * modctx);
+bool   jar_mod_init(modcontext * modctx);
+bool   jar_mod_setcfg(modcontext * modctx, int samplerate, int bits, int stereo, int stereo_separation, int filter);
+bool   jar_mod_load(modcontext * modctx, void * mod_data, int mod_data_size);
+void   jar_mod_fillbuffer(modcontext * modctx, short * outbuffer, unsigned long nbsample, jar_mod_tracker_buffer_state * trkbuf);
+void   jar_mod_unload(modcontext * modctx);
+mulong jar_mod_load_file(modcontext * modctx, char* filename);
+mulong jar_mod_current_samples(modcontext * modctx);
+mulong jar_mod_max_samples(modcontext * modctx);
 
 #ifdef __cplusplus
 }
@@ -411,7 +413,7 @@ static int getnote( modcontext * mod, unsigned short period, int finetune )
     return MAXNOTES;
 }
 
-static void worknote( note * nptr, channel * cptr,char t,modcontext * mod )
+static void worknote( note * nptr, channel * cptr, char t, modcontext * mod )
 {
     muint sample, period, effect, operiod;
     muint curnote, arpnote;
@@ -424,14 +426,14 @@ static void worknote( note * nptr, channel * cptr,char t,modcontext * mod )
 
     if ( period || sample )
     {
-        if( sample && sample<32 )
+        if( sample && sample < 32 )
         {
             cptr->sampnum = sample - 1;
         }
 
         if( period || sample )
         {
-            cptr->sampdata =(char *) mod->sampledata[cptr->sampnum];
+            cptr->sampdata = (char *) mod->sampledata[cptr->sampnum];
             cptr->length = mod->song.samples[cptr->sampnum].length;
             cptr->reppnt = mod->song.samples[cptr->sampnum].reppnt;
             cptr->replen = mod->song.samples[cptr->sampnum].replen;
@@ -457,7 +459,7 @@ static void worknote( note * nptr, channel * cptr,char t,modcontext * mod )
                 cptr->samppos = 0;
         }
 
-        cptr->decalperiod=0;
+        cptr->decalperiod = 0;
         if( period )
         {
             if(cptr->finetune)
@@ -666,7 +668,9 @@ static void worknote( note * nptr, channel * cptr,char t,modcontext * mod )
 
             mod->tablepos = (effect & 0xFF);
             if(mod->tablepos >= mod->song.length)
+            {
                 mod->tablepos = 0;
+            }
             mod->patternpos = 0;
             mod->jump_loop_effect = 1;
 
@@ -695,7 +699,9 @@ static void worknote( note * nptr, channel * cptr,char t,modcontext * mod )
             mod->jump_loop_effect = 1;
             mod->tablepos++;
             if(mod->tablepos >= mod->song.length)
+            {
                 mod->tablepos = 0;
+            }
 
         break;
 
@@ -1057,6 +1063,7 @@ bool jar_mod_init(modcontext * modctx)
         modctx->stereo_separation = 1;
         modctx->bits = 16;
         modctx->filter = 1;
+        modctx->loopcount = 0;
 
         for(i=0;i<PERIOD_TABLE_LENGTH - 1;i++)
         {
@@ -1104,6 +1111,7 @@ bool jar_mod_setcfg(modcontext * modctx, int samplerate, int bits, int stereo, i
     return 0;
 }
 
+// make certain that mod_data stays in memory while playing
 bool jar_mod_load( modcontext * modctx, void * mod_data, int mod_data_size )
 {
     muint i, max;
@@ -1315,8 +1323,8 @@ void jar_mod_fillbuffer( modcontext * modctx, short * outbuffer, unsigned long n
                 {
                     if( trkbuf->nb_of_state < trkbuf->nb_max_of_state )
                     {
-                        memclear(&trkbuf->track_state_buf[trkbuf->nb_of_state],0,sizeof(tracker_state));
-                    }
+                        memclear(&trkbuf->track_state_buf[trkbuf->nb_of_state], 0, sizeof(tracker_state));
+                    } else modctx->loopcount++; // count next loop
                 }
 
                 l=0;
@@ -1479,6 +1487,7 @@ void jar_mod_unload( modcontext * modctx)
         modctx->patterntickse = 0;
         modctx->patternticksaim = 0;
         modctx->sampleticksconst = 0;
+        modctx->loopcount = 0;
 
         modctx->samplenb = 0;
 
@@ -1493,9 +1502,9 @@ void jar_mod_unload( modcontext * modctx)
     }
 }
 
-long jar_mod_load_file(modcontext * modctx, char* filename)
+mulong jar_mod_load_file(modcontext * modctx, char* filename)
 {
-    int fsize = 0;
+    mulong fsize = 0;
     if(modctx->modfile)
     {
         free(modctx->modfile);
@@ -1512,6 +1521,7 @@ long jar_mod_load_file(modcontext * modctx, char* filename)
         if(fsize && fsize < 32*1024*1024)
         {
             modctx->modfile = malloc(fsize);
+            modctx->modfilesize = fsize;
             memset(modctx->modfile, 0, fsize);
             fread(modctx->modfile, fsize, 1, f);
             fclose(f);
@@ -1522,7 +1532,7 @@ long jar_mod_load_file(modcontext * modctx, char* filename)
     return fsize;
 }
 
-long jar_mod_current_samples(modcontext * modctx)
+mulong jar_mod_current_samples(modcontext * modctx)
 {
     if(modctx)
         return modctx->samplenb;
@@ -1531,9 +1541,19 @@ long jar_mod_current_samples(modcontext * modctx)
 }
 
 // TODO!
-long jar_mod_max_samples(modcontext * modctx)
+mulong jar_mod_max_samples(modcontext * ctx)
 {
-    return 1000000;
+    muint buff[2];
+    mulong samplesize = 0;
+    mulong lastcount = ctx->loopcount;
+    jar_mod_tracker_buffer_state trkbuf;
+    
+    while(1){
+        jar_mod_fillbuffer( ctx, buff, 1, &trkbuf );
+        samplesize++;
+        if(ctx->loopcount > lastcount) break;
+    }
+    return samplesize;
 }
 
 #endif // end of JAR_MOD_IMPLEMENTATION
