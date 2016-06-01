@@ -1291,7 +1291,10 @@ void jar_mod_fillbuffer( modcontext * modctx, short * outbuffer, unsigned long n
                             modctx->tablepos++;
                             modctx->patternpos = 0;
                             if(modctx->tablepos >= modctx->song.length)
+                            {
                                 modctx->tablepos = 0;
+                                modctx->loopcount++; // count next loop
+                            }
                         }
                     }
                     else
@@ -1324,7 +1327,7 @@ void jar_mod_fillbuffer( modcontext * modctx, short * outbuffer, unsigned long n
                     if( trkbuf->nb_of_state < trkbuf->nb_max_of_state )
                     {
                         memclear(&trkbuf->track_state_buf[trkbuf->nb_of_state], 0, sizeof(tracker_state));
-                    } else modctx->loopcount++; // count next loop
+                    }
                 }
 
                 l=0;
@@ -1540,20 +1543,21 @@ mulong jar_mod_current_samples(modcontext * modctx)
     return 0;
 }
 
-// TODO!
+// Works, however it is very slow, this data should be cached to ensure it is run only once per file
 mulong jar_mod_max_samples(modcontext * ctx)
 {
+    modcontext tmpctx;
+    jar_mod_init(&tmpctx);
+    if(!jar_mod_load(&tmpctx, (void*)ctx->modfile, ctx->modfilesize)) return 0;
+    
     muint buff[2];
-    mulong samplesize = 0;
-    mulong lastcount = ctx->loopcount;
-    jar_mod_tracker_buffer_state trkbuf;
+    mulong lastcount = tmpctx.loopcount;
     
     while(1){
-        jar_mod_fillbuffer( ctx, buff, 1, &trkbuf );
-        samplesize++;
-        if(ctx->loopcount > lastcount) break;
+        jar_mod_fillbuffer( &tmpctx, buff, 1, 0 );
+        if(tmpctx.loopcount > lastcount) break;
     }
-    return samplesize;
+    return tmpctx.samplenb;
 }
 
 #endif // end of JAR_MOD_IMPLEMENTATION
