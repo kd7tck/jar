@@ -250,6 +250,7 @@ void   jar_mod_unload(modcontext * modctx);
 mulong jar_mod_load_file(modcontext * modctx, char* filename);
 mulong jar_mod_current_samples(modcontext * modctx);
 mulong jar_mod_max_samples(modcontext * modctx);
+void   jar_mod_seek_start(modcontext * ctx);
 
 #ifdef __cplusplus
 }
@@ -1463,8 +1464,8 @@ void jar_mod_fillbuffer( modcontext * modctx, short * outbuffer, unsigned long n
                 trkbuf->nb_of_state = 0;
                 trkbuf->cur_rd_index = 0;
                 trkbuf->name[0] = 0;
-                memclear(trkbuf->track_state_buf,0,sizeof(tracker_state) * trkbuf->nb_max_of_state);
-                memclear(trkbuf->instruments,0,sizeof(trkbuf->instruments));
+                memclear(trkbuf->track_state_buf, 0, sizeof(tracker_state) * trkbuf->nb_max_of_state);
+                memclear(trkbuf->instruments, 0, sizeof(trkbuf->instruments));
             }
         }
     }
@@ -1479,9 +1480,9 @@ void jar_mod_unload( modcontext * modctx)
             free(modctx->modfile);
             modctx->modfile = 0;
         }
-        memclear(&modctx->song,0,sizeof(modctx->song));
-        memclear(&modctx->sampledata,0,sizeof(modctx->sampledata));
-        memclear(&modctx->patterndata,0,sizeof(modctx->patterndata));
+        memclear(&modctx->song, 0, sizeof(modctx->song));
+        memclear(&modctx->sampledata, 0, sizeof(modctx->sampledata));
+        memclear(&modctx->patterndata, 0, sizeof(modctx->patterndata));
         modctx->tablepos = 0;
         modctx->patternpos = 0;
         modctx->patterndelay  = 0;
@@ -1495,7 +1496,7 @@ void jar_mod_unload( modcontext * modctx)
 
         modctx->samplenb = 0;
 
-        memclear(modctx->channels,0,sizeof(modctx->channels));
+        memclear(modctx->channels, 0, sizeof(modctx->channels));
 
         modctx->number_of_channels = 0;
 
@@ -1559,6 +1560,20 @@ mulong jar_mod_max_samples(modcontext * ctx)
         if(tmpctx.loopcount > lastcount) break;
     }
     return tmpctx.samplenb;
+}
+
+// move seek_val to sample index, 0 -> jar_mod_max_samples is the range
+void jar_mod_seek_start(modcontext * ctx)
+{
+    if(ctx)
+    {
+        char* tmpmodfile = ctx->modfile;
+        long size = ctx->modfilesize;
+        jar_mod_init(ctx);
+        jar_mod_load(ctx, tmpmodfile, size);
+        ctx->modfilesize = size;
+        ctx->modfile = tmpmodfile;
+    }
 }
 
 #endif // end of JAR_MOD_IMPLEMENTATION
