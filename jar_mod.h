@@ -59,10 +59,10 @@
 // - Initialize the modcontext buffer. Must be called before doing anything else.
 //   Return 1 if success. 0 in case of error.
 // -------------------------------------------
-// int  jar_mod_load( modcontext * modctx, void * mod_data, int mod_data_size )
+// mulong jar_mod_load_file(modcontext * modctx, char* filename)
 //
-// - "Load" a MOD from memory (from "mod_data" with size "mod_data_size").
-//   Return 1 if success. 0 in case of error.
+// - "Load" a MOD from file, context must already be initialized.
+//   Return size of file in bytes.
 // -------------------------------------------
 // void jar_mod_fillbuffer( modcontext * modctx, unsigned short * outbuffer, unsigned long nbsample, jar_mod_tracker_buffer_state * trkbuf )
 //
@@ -245,7 +245,6 @@ typedef struct jar_mod_tracker_buffer_state_
 
 bool   jar_mod_init(modcontext * modctx);
 bool   jar_mod_setcfg(modcontext * modctx, int samplerate, int bits, int stereo, int stereo_separation, int filter);
-bool   jar_mod_load(modcontext * modctx, void * mod_data, int mod_data_size);
 void   jar_mod_fillbuffer(modcontext * modctx, short * outbuffer, unsigned long nbsample, jar_mod_tracker_buffer_state * trkbuf);
 void   jar_mod_unload(modcontext * modctx);
 mulong jar_mod_load_file(modcontext * modctx, char* filename);
@@ -1112,7 +1111,7 @@ bool jar_mod_setcfg(modcontext * modctx, int samplerate, int bits, int stereo, i
 }
 
 // make certain that mod_data stays in memory while playing
-bool jar_mod_load( modcontext * modctx, void * mod_data, int mod_data_size )
+static bool jar_mod_load( modcontext * modctx, void * mod_data, int mod_data_size )
 {
     muint i, max;
     unsigned short t;
@@ -1121,6 +1120,8 @@ bool jar_mod_load( modcontext * modctx, void * mod_data, int mod_data_size )
 
     modmemory = (unsigned char *)mod_data;
     endmodmemory = modmemory + mod_data_size;
+    
+    
 
     if(modmemory)
     {
