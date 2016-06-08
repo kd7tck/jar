@@ -4,5 +4,3 @@ jar is a collection of reconstituted libraries. Each has been slightly modified 
 ### jar_xm    :    xm module decoder
 
 ### jar_mod   :    amiga module decoder
-
-### tmx2c     :    converts tiled tmx files into c header file
