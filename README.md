@@ -4,3 +4,5 @@ jar is a collection of reconstituted libraries. Each has been slightly modified 
 ### jar_xm    :    xm module decoder
 
 ### jar_mod   :    amiga module decoder
+
+### jar_steam :    example steam_api C wrapper
