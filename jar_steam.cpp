@@ -11,7 +11,7 @@ USAGE:
     Every time you compile an executable with gcc, link against the following in the order given "steam_api_wrap.lib, steam_api.a, stdc++".
     
 INCOMPLETE:
-    This library for the most part is really meant to be an example. Completing it was never the intent, please feel free to add in any remaining functions you desire.
+    This library is really meant to be an example. Completing it was never the intent, please feel free to add in any remaining functions you desire.
     
 
 By: Joshua Adam Reisenauer <kd7tck@gmail.com>
