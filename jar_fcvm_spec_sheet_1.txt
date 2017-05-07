@@ -4,7 +4,7 @@ FANTASY CONSOLE VIRTUAL MACHINE SPEC SHEET VERSION 0.01
 Fixed Clock/Update Rate: 5MHZ
 Static Ram Range: $0x00000 -> $0xFFFFF (1.048.576 Bytes)
 Stack Range : $0x00000 -> $0x0FFFF (64kb, Ascending Stack, starts at address 0)
-VRAM BackGround Range : $0x10000 -> $0x1FFFF (64kb or 256X256 with 256 possible colors, sprite data is always stored in Game Data section of memory)
+VRAM BackGround Range : $0x10000 -> $0x1FFFF (64kb or 256X256 with 256 possible colors)
 Special Register Range : $0x20000 -> $0x2FFFF (64kb or 256 clusters of 256 bytes)
 Game Data : $0x30000 -> $0xFFFFF (832KB, game byte code)
 
@@ -13,6 +13,7 @@ Game Data : $0x30000 -> $0xFFFFF (832KB, game byte code)
 --------------------------------------------------------------------------------------------------------------------------------------------------------------
 ::VRAM BackGround Information::
 Background VRAM is meant to be tiled/mirrored to give the illusion of infinite worlds, VRAM flags in $0x20100 control this effect.
+Sprite data is always stored in Game Data section of memory, never in VRAM BackGround. VRAM-BACK is more like a large dynamic sprite vs the fixed static sprites in game data.
 
 
 
