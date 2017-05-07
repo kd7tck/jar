@@ -1,0 +1,26 @@
+FANTASY CONSOLE VIRTUAL MACHINE SPEC SHEET VERSION 1.0
+--------------------------------------------------------------------------------------------------------------------------------------------------------------
+Fixed Clock/Update Rate: 5MHZ
+Static Ram Range: $0x00000 -> $0xFFFFF, (1.048.576 Bytes)
+Stack Range : $0x00000 -> $0x0FFFF, (64kb, Ascending Stack, starts at address 0)
+VRAM Range : $0x10000 -> $0x1FFFF, (64kb or 256X256 with 256 possible colors)
+Special Register Range : $0x20000 -> $0x2FFFF, (64kb or 256 clusters of 256 bytes)
+
+
+
+
+
+
+
+
+--------------------------------------------------------------------------------------------------------------------------------------------------------------
+List Of Special Registers:
+
+
+    $0x20000 -> $0x200FF :: Screen Bounding Bottom
+        All 256 bytes represents the bounding line offset for the bottom of the screen for each corresposnding X of (X,Y). The value 0 signifies no offset thus the bottom most pixel is the boundary line. the value 255 signifies a Y-dimensional barrier.
+               ||
+               ||
+               ||  
+    ________---||
+    0,0,0,0,16,255
