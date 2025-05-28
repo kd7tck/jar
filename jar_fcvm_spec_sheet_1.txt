@@ -25,6 +25,7 @@
 ## 1. Version History
 *   `v0.1.0 (Initial Draft)`: Document creation.
 *   `v0.2.0 (In Progress)`: Structural improvements, clarifications, and additions. Converted to Markdown.
+*   `v0.3.0 (In Progress)`: Added Hex and FPGA info, cleaned up.
 
 ---
 ## 2. Introduction
