@@ -11,7 +11,7 @@
 5.  Clock, Timing, and Synchronization
 6.  Input System
 7.  Audio System
-8.  VRAM BackGround Information
+8.  VRAM background Information
 9.  Sprite System
 10. Color Palette System
 11. Text Rendering System
@@ -36,10 +36,32 @@ This document outlines the technical specifications for the FC-8 (Fantasy Consol
 Fixed Clock/Update Rate: `5MHZ`
 Memory Range: `$0x00000` -> `$0xFFFFF` (1,048,576 Bytes)
 Stack Range : `$0x00000` -> `$0x0FFFF` (64kb, Ascending Stack, starts at address 0)
-VRAM BackGround Range : `$0x10000` -> `$0x1FFFF` (64kb or 256x256 with 256 possible colors)
-Special Register Range : `$0x20000` -> `$0x2FFFF` (64kb or 256 clusters of 256 bytes)
+VRAM background range : `$0x10000` -> `$0x1FFFF` (64kb or 256x256 with 256 possible colors)
+Special Registers range : `$0x20000` -> `$0x2FFFF` (64kb or 256 clusters of 256 bytes)
 Static Game Data AKA Cartridge : `$0x30000` -> `$0xFFFFF` (832KB, Program Code / Machine Code)
 
+### System State on Reset/Power-On
+Upon system reset or power-on, hardware components and CPU registers are initialized to defined states:
+*   **CPU Registers:**
+    *   Program Counter (PC): Set to the 'Program Entry Point' specified in the Cartridge Header (e.g., `$30100`). If no valid cartridge is found, the PC's state may be undefined or set to a default halt address (e.g., jump to self).
+    *   Stack Pointer (SP): Initialized to `$00000`. (The stack is ascending, starts at memory location `$0x00000`. PUSH operations write data then increment SP. POP operations decrement SP then read data).
+    *   Accumulator (A), Index X (X), Index Y (Y): Initialized to `$00`.
+    *   Flag Register (F): Initialized to `$00`. (Note: some CPUs set Z flag if A is $00, this spec assumes F is entirely $00).
+*   **Selected Special Function Registers (SFRs):** Refer to individual component sections for full default states. Key examples:
+    *   `SCREEN_CTRL_REG` (`$0x20800`): `$00` (Display Disabled, 256x240 Mode).
+    *   `AUDIO_SYSTEM_CTRL_REG` (`$0x207F1`): `$01` (Audio System Enabled).
+    *   `AUDIO_MASTER_VOL_REG` (`$0x207F0`): `$07` (Max volume).
+    *   Audio Channel Registers (e.g. `$0x20700`-`$0x20713`): All frequencies zero, volumes zero, channels disabled (control register bit 7 set to 0, or trigger bit 0 to 0).
+    *   `PALETTE_ADDR_REG` (`$0x20810`): `$00`.
+    *   VRAM Control Registers (`$0x20100` - `$0x20102` for `VRAM_FLAGS_REG`, `VRAM_SCROLL_X_REG`, `VRAM_SCROLL_Y_REG`): `$00`.
+    *   `TEXT_CTRL_REG` (`$0x20840`): `$00` (Text Layer Disabled, Priority 0).
+*   **Memory Contents:**
+    *   Stack RAM (`$0x00000-$0x0FFFF`): Content is undefined on power-on.
+    *   VRAM (`$0x10000-$0x1FFFF`): Content is undefined on power-on. Usually cleared to color index `$00` (transparent/black) by system boot/game code.
+    *   Palette Data: Initialized to a default system palette (see Section 11).
+    *   Text Character Map (`$0x21000-$0x2177F`): Content is undefined. Usually cleared by system boot/game code.
+
+It is the responsibility of the bootloader (if present) or the game program to perform further initialization as needed (e.g., clearing VRAM, setting up character maps, configuring sound channels).
 
 ---
 ## 4. Cartridge Format
@@ -107,7 +129,21 @@ The cartridge header points to several key data sections which follow it. The ex
 
 ### Registers:
 *   **Program Counter (PC):** 16-bit, points to the memory address of the next instruction to be fetched.
-*   **Stack Pointer (SP):** 16-bit, points to the current top of the stack. Since the stack is ascending and starts at `$0x0000`, PUSH operations increment SP, and POP operations decrement SP.
+*   **Stack Pointer (SP):** 16-bit. The stack is ascending, meaning it grows towards higher memory addresses. It operates within the Stack Range `$0x00000` - `$0x0FFFF`.
+    *   **Initialization:** SP is initialized to `$00000` on system reset.
+    *   **PUSH operation:** When pushing an 8-bit value, the CPU first writes the value to the memory location pointed to by SP, and then SP is incremented by 1. When pushing a 16-bit value (like the Program Counter during JSR), the CPU writes the high byte to SP, increments SP, writes the low byte to the new SP, and then increments SP again (or a similar sequence ensuring low byte at lower address, high byte at higher address, and SP ends up +2). For FC-8, we'll define PUSH of a 16-bit value (PC) as:
+        1. Write PCH (high byte of PC) to address SP.
+        2. Increment SP.
+        3. Write PCL (low byte of PC) to address SP.
+        4. Increment SP.
+        This means SP points to the next available empty slot after a push. (This contradicts the reset state note: "PUSH operations write data then increment SP". If SP points to last item, PUSH should be: store at SP, then inc. If SP points to next free, PUSH is: store at SP, then inc. Let's stick to: SP points to *next free slot*. So, PUSH writes to SP, then SP increments. POP decrements SP, then reads from SP. This aligns with SP starting at $00000 and being the *next available* slot.)
+    *   **Revised PUSH for clarity based on 'points to next free slot' interpretation:**
+        *   **8-bit PUSH (e.g., PHA):** The value is written to the memory location pointed to by SP. SP is then incremented by 1.
+        *   **16-bit PUSH (JSR):** The high byte of the address (PCH) is written to memory at SP. SP is incremented. Then the low byte (PCL) is written to memory at the new SP. SP is incremented again. (Order: PUSH PCH, then PUSH PCL, stack grows upwards with PCL at SP-1 and PCH at SP-2 after the operation, SP points to next free slot).
+    *   **Revised POP for clarity based on 'points to next free slot' interpretation:**
+        *   **8-bit POP (e.g., PLA):** SP is decremented by 1. The value is then read from the memory location pointed to by the new SP.
+        *   **16-bit POP (RTS):** SP is decremented. The low byte of the address (PCL) is read from memory at SP. SP is decremented again. The high byte (PCH) is read from memory at the new SP. (Order: POP PCL, then POP PCH).
+    *   This implies SP always points to the next free/available memory location on the stack. An empty stack has SP = `$00000`.
 *   **Accumulator (A):** 8-bit, used for arithmetic, logical, and data transfer operations.
 *   **Index Register X (X):** 8-bit, primarily used for indexed addressing modes.
 *   **Index Register Y (Y):** 8-bit, primarily used for indexed addressing modes.
@@ -124,6 +160,9 @@ The cartridge header points to several key data sections which follow it. The ex
 ### Instruction Set Architecture (ISA):
 Instructions are generally 1 to 3 bytes long, consisting of an opcode and optional operands (data or memory addresses).
 
+### CPU Implementation Notes for FPGA
+Implementing the FC-8 CPU on an FPGA involves translating the architectural specifications into a hardware description (using Verilog or VHDL, for example). Each instruction in the ISA would typically be implemented as a state machine within the FPGA. The CPU's overall operation revolves around the fetch-decode-execute cycle, driven by the 5MHz system clock. Memory access (to stack, VRAM, special registers, or cartridge ROM) will need to adhere to the timing capabilities of the chosen FPGA memory resources (e.g., BRAM access times).
+
 #### Opcode Table (Partial):
 | Mnemonic      | Hex Opcode | Bytes | Addressing Mode(s)        | Flags Affected | Description                                       |
 |---------------|------------|-------|---------------------------|----------------|---------------------------------------------------|
@@ -139,8 +178,8 @@ Instructions are generally 1 to 3 bytes long, consisting of an opcode and option
 | DEC `$addr`   | `$CE`      | 3     | Absolute                  | N, Z           | Decrement value at memory location.               |
 | DEC `$zp`     | `$C6`      | 2     | Zero-Page                 | N, Z           | Decrement value at zero-page memory location.     |
 | JMP `$addr`   | `$4C`      | 3     | Absolute                  |                | Jump to absolute address.                         |
-| JSR `$addr`   | `$20`      | 3     | Absolute                  |                | Jump to Subroutine (pushes PC-1 to stack).        |
-| RTS           | `$60`      | 1     | Implied                   |                | Return from Subroutine (pulls PC from stack & increments).|
+| JSR `$addr`   | `$20`      | 3     | Absolute                  |                | Jump to Subroutine. Pushes the address of the last byte of the JSR instruction (PC+2 for a 3-byte JSR, effectively ReturnAddress-1) onto the stack, then sets PC to the operand address. SP is incremented by 2. |
+| RTS           | `$60`      | 1     | Implied                   |                | Return from Subroutine. Pulls a 16-bit address (ReturnAddress-1) from the stack (PCL first, then PCH, SP is decremented by 2 in total). Sets PC to (pulled_address + 1).|
 | PHA           | `$48`      | 1     | Implied                   |                | Push Accumulator onto Stack.                      |
 | PLA           | `$68`      | 1     | Implied                   | N, Z           | Pull Accumulator from Stack.                      |
 | BNE `$offset` | `$D0`      | 2     | Relative                  |                | Branch if Zero flag is clear.                     |
@@ -153,6 +192,36 @@ Instructions are generally 1 to 3 bytes long, consisting of an opcode and option
 | EOR #`$value` | `$49`      | 2     | Immediate                 | N, Z           | Logical XOR Accumulator with immediate value.     |
 | NOP           | `$EA`      | 1     | Implied                   |                | No Operation.                                     |
 | HLT           | `$02`      | 1     | Implied                   |                | Halt Processor (e.g., by jumping to self `$02` -> JMP `$0002`). |
+
+### Instruction Cycle Counts
+The following table provides estimated cycle counts for each instruction. These are typical values for a simple 8-bit CPU design on an FPGA. Actual cycle counts can vary based on the specifics of the FPGA implementation, memory access speeds, and whether page boundaries are crossed by indexed addressing modes. These counts assume that the opcode and any immediate operands have already been fetched.
+
+| Mnemonic        | Addressing Mode(s)          | Estimated Cycles        |
+|-----------------|-----------------------------|-------------------------|
+| LDA             | Immediate                   | 2 cycles                |
+| LDA             | Zero-Page                   | 3 cycles                |
+| LDA             | Absolute                    | 4 cycles                |
+| STA             | Zero-Page                   | 3 cycles                |
+| STA             | Absolute                    | 4 cycles                |
+| ADC             | Immediate                   | 2 cycles                |
+| SBC             | Immediate                   | 2 cycles                |
+| INC             | Zero-Page                   | 5 cycles (read-modify-write) |
+| INC             | Absolute                    | 6 cycles (read-modify-write) |
+| DEC             | Zero-Page                   | 5 cycles                |
+| DEC             | Absolute                    | 6 cycles                |
+| JMP             | Absolute                    | 3 cycles                |
+| JSR             | Absolute                    | 6 cycles (includes stack push) |
+| RTS             | Implied                     | 6 cycles (includes stack pull) |
+| PHA             | Implied                     | 3 cycles (includes stack push) |
+| PLA             | Implied                     | 4 cycles (includes stack pull) |
+| BNE/BEQ/BCS/BCC | Relative (branch taken)     | 3 cycles                |
+| BNE/BEQ/BCS/BCC | Relative (branch not taken) | 2 cycles                |
+| CMP             | Immediate                   | 2 cycles                |
+| AND/ORA/EOR     | Immediate                   | 2 cycles                |
+| NOP             | Implied                     | 2 cycles                |
+| HLT             | Implied                     | effectively infinite (or until reset) |
+
+Note: For indexed addressing modes (e.g., `LDA $1000,X`), add 1 cycle if a page boundary is crossed when adding the index register to the base address. Operations that modify memory (INC, DEC, STA) typically require more cycles than read-only operations.
 
 #### Addressing Modes:
 *   **Immediate:** The operand is the actual data value. (e.g., `LDA #$A5` - Load `$A5` into A)
@@ -202,6 +271,34 @@ This counter increments by one at the start of each VBLANK period (coinciding wi
 #### Wait Operations:
 The FC-8 hardware itself does not define a specific CPU `WAIT` instruction tied to VBLANK. For precise timing within a frame, or for simple delays, games typically implement their own delay loops by consuming CPU cycles. Synchronizing to VBLANK using the `VSYNC_STATUS_REG` is the primary method for frame-level timing.
 
+### Random Number Generator (`RAND_NUM_REG`)
+The FC-8 provides a simple pseudo-random number generator (PRNG) accessible via a special register.
+*   **`$0x20830` - `RAND_NUM_REG` (Random Number Generator Register) (Read/Write)**
+    *   **Reading:** Returns an 8-bit pseudo-random number. The exact algorithm for the PRNG is not strictly defined but should provide a reasonably uniform distribution of byte values. A common implementation is a Linear Feedback Shift Register (LFSR). The sequence will repeat eventually.
+    *   **Writing:** Writing any value to this register (the value itself is typically ignored) re-seeds the PRNG. Seeding can help in producing different sequences of random numbers on subsequent game plays or by using an unpredictable seed source (like frame count or user input timing). If not seeded, the PRNG will typically start with a default seed value on system reset, producing the same sequence each time.
+
+### Master Display Control (`SCREEN_CTRL_REG`)
+The primary control over the display output, including its visibility and overall resolution mode, is managed by the `SCREEN_CTRL_REG` located at `$0x20800`.
+*   **`$0x20800` - `SCREEN_CTRL_REG` (Screen Control Register) (R/W)**
+    *   **Bit 0: Display Enable** (Read/Write)
+        -   `0` = Disable display output. The screen will typically be blank or show a default border color. This can be used for screen-off effects or to save processing during full-screen transitions if VRAM updates are slow. (Default: 0 on cold boot, should be set to 1 by system initialization or game).
+        -   `1` = Enable display output. The hardware will render the VRAM background, sprites, and text layer as configured. (Default: System should aim to set this to 1 after basic initialization).
+    *   **Bit 1: Active Display Mode** (Read/Write)
+        -   `0` = **256x240 Mode**: The visible display area is 256 pixels wide by 240 pixels high.
+            -   VRAM Y-coordinates from 0 to 239 are typically mapped to the screen.
+            -   Vertical scrolling (`VRAM_SCROLL_Y_REG`) will operate within this 240-line window relative to the 256-line VRAM.
+            -   The `Screen Bounding Bottom` effect (`$0x20000 - $0x200FF`) offsets are relative to Y=239.
+            -   The Text Layer (if screen resolution for text is 256x240) will map directly.
+        -   `1` = **256x256 Mode**: The visible display area is 256 pixels wide by 256 pixels high.
+            -   The full 256 lines of VRAM can be made visible.
+            -   Vertical scrolling (`VRAM_SCROLL_Y_REG`) uses the full 256-line range.
+            -   The `Screen Bounding Bottom` effect (`$0x20000 - $0x200FF`) offsets are relative to Y=255.
+            -   The Text Layer (32x30 characters = 256x240 pixels) will still occupy the top 240 lines; the bottom 16 lines will be solely VRAM/sprites, or text rendering might be clipped/undefined there depending on hardware. (It's recommended that if text is used in 256x256 mode, it's understood to primarily use the top 256x240 area).
+    *   **Bits 2-7: Reserved** (Read/Write)
+        -   Must be written as 0 for future compatibility. Their read value is undefined.
+
+On system reset, `SCREEN_CTRL_REG` typically defaults to `$00` (Display Disabled, 256x240 Mode). Bootloader or game initialization routines are responsible for enabling the display and selecting the desired mode.
+
 ### Game Loop Expectation:
 A typical game loop on the FC-8 would follow this structure:
 1.  Wait for VBLANK: Poll `VSYNC_STATUS_REG` until the `IN_VBLANK` bit is set or the `NEW_FRAME` flag indicates a new frame has begun.
@@ -222,7 +319,7 @@ Buttons:
 
 ### Input Register:
 The state of the gamepad buttons is mapped to a single 8-bit register located at memory address `$0x20600`.
-This address is within the Special Register Range.
+This address is within the Special Registers range.
 
 Register `$0x20600` - `GAMEPAD_STATE_REG` (Gamepad State Register):
 *   Bit 0: Up (1 if pressed, 0 if not pressed)
@@ -239,7 +336,45 @@ Game programs can read the byte value from memory address `$0x20600` (`GAMEPAD_S
 It is common practice to read this register once per frame to poll for input.
 
 ---
-## 8. Audio System
+## 8. VRAM background Information
+
+The FC-8 features a versatile VRAM background layer, which functions as a 256x256 pixel direct-mapped bitmap. Each pixel is an 8-bit color index, referencing the global 256-color palette. This background layer can be scrolled, flipped, and mirrored to create various visual effects. It is stored in the VRAM Background Range: `$0x10000` - `$0x1FFFF` (64KB).
+
+### VRAM Data Layout
+The 64KB of VRAM maps directly to a 256x256 grid of pixels. The byte at `$0x10000` corresponds to the color index of the pixel at coordinate (0,0) of the background bitmap. The byte at `$0x10001` is pixel (1,0), and so on. The address for a pixel at `(x, y)` within the VRAM bitmap is calculated as: `Address = $0x10000 + (y * 256) + x`.
+
+Color index `$00` in the VRAM data is treated as transparent, allowing any layers behind this VRAM (if any were defined, though typically it's the rearmost graphical layer) to show through. However, it's more common for sprites or the text layer to be rendered *over* the VRAM background.
+
+### Scrolling
+*   `VRAM_SCROLL_X_REG` (`$0x20101`): This 8-bit register controls the fine horizontal scroll position of the VRAM background. A value of 0 means no scroll. As the value increases, the background content shifts to the left on the screen. The visible screen acts as a window into the 256-pixel wide VRAM background. For example, if `VRAM_SCROLL_X_REG` is 10, the pixel column from VRAM address `x=10` will be displayed at screen column `x=0`.
+*   `VRAM_SCROLL_Y_REG` (`$0x20102`): This 8-bit register controls the fine vertical scroll position. An increasing value shifts the background content upwards on the screen. For example, if `VRAM_SCROLL_Y_REG` is 20, the pixel row from VRAM address `y=20` will be displayed at screen row `y=0`.
+
+When scrolling, pixel coordinates are effectively wrapped around the 256x256 VRAM space. For example, if `VRAM_SCROLL_X_REG` is 250, and the screen is 256 pixels wide, the rightmost 6 columns on screen will show pixels from VRAM columns 0-5.
+
+### Flipping and Mirroring (Tiling Effects)
+Refer to `VRAM_FLAGS_REG` (`$0x20100`).
+*   Bit 0 (Mirror-X): When set, the VRAM content fetched for display is mirrored horizontally. This means if the hardware is trying to display the right half of the screen, it will instead display a mirrored version of the left half of the VRAM source. This can be used with scrolling to create an infinitely scrolling background from a smaller unique portion.
+*   Bit 1 (Mirror-Y): Similar to Mirror-X, but applies vertically.
+*   Bit 2 (Flip-X): When set, the entire source VRAM content (after scrolling, before mirroring) is flipped horizontally before being rendered. This is different from mirroring which typically applies to one half of the content based on the other.
+*   Bit 3 (Flip-Y): Similar to Flip-X, but applies vertically.
+*   Bits 4-7: Page Select / Coarse Y Offset: In the context of a direct bitmap VRAM, these bits can be interpreted as a coarse scroll or page selection mechanism, effectively adding `(value * 16)` to the base Y scroll coordinate *before* fine scrolling is applied. The 4-bit signed value (-8 to +7) means an offset of -128 to +112 lines in 16-line blocks. For instance, a value of 1 in these bits would start rendering from VRAM row 16, on top of any `VRAM_SCROLL_Y_REG` value. This allows quickly switching between different vertical 'pages' or large areas of the VRAM bitmap.
+
+### Screen Bounding Bottom Effect (`$0x20000` - `$0x200FF`)
+These 256 registers provide a per-column vertical offset for the *bottom edge* of where the VRAM background (and potentially other layers, depending on hardware implementation) is drawn, creating a deformable bottom boundary for the display area. Each register `$0x20000 + X` corresponds to screen column X (0-255).
+
+The 8-bit value in each register specifies an *upward offset* from the normal bottom screen edge (e.g., Y=239 or Y=255 depending on `SCREEN_CTRL_REG`). A value of 0 means no offset for that column; the screen ends at its normal maximum Y. A value of 16 means for that specific X column, rendering stops 16 pixels *above* the normal bottom edge. A value of 255 would mean the screen ends at Y=0 for that column (or is effectively masked).
+
+This allows for effects like wavy water surfaces, pseudo-3D horizons, or masking parts of the bottom screen on a per-column basis. Pixels 'below' this dynamic boundary for a given column are typically not rendered or are filled with a border/backdrop color (e.g., color 0 from the palette).
+
+The visual data 'removed' by this effect is clipped; it does not cause the content above it to scroll or shift down.
+
+### Interaction with Other Layers
+*   The VRAM background is generally the rearmost graphical layer.
+*   Sprites are typically rendered on top of the VRAM background. However, a sprite's 'Priority' attribute can cause it to be rendered behind the VRAM background (see Section 10: Sprite System, Byte 3: Attribute Flags, Bit 2: Priority). This means the VRAM background pixel will be drawn if it's not transparent (color index `$00`).
+*   The Text Layer, if enabled and its character cells do not have a transparent background, is rendered on top of the VRAM background. If a text cell's background is transparent, the VRAM background will show through (See Section 12: Text Rendering System).
+
+---
+## 9. Audio System
 ### Overall Capabilities:
 The FC-8 features a 4-channel sound system. Each channel is independent and can generate the following waveforms:
 *   Square wave (with variable duty cycle)
@@ -249,7 +384,7 @@ The FC-8 features a 4-channel sound system. Each channel is independent and can 
 One channel (e.g., Channel 4) can potentially be used for simple PCM sample playback by rapidly changing its volume or waveform register, though this is CPU intensive and requires careful programming.
 
 ### Channel Registers:
-Each of the 4 channels has a dedicated block of 5 memory-mapped registers within the Special Register Range.
+Each of the 4 channels has a dedicated block of 5 memory-mapped registers within the Special Registers range.
 
 #### Channel 1 Registers:
 *   `$0x20700` - `CH1_FREQ_LO_REG`: Channel 1 Frequency Control, Low Byte (R/W)
@@ -311,13 +446,6 @@ To stop a sound:
 *   Disabling the entire audio system via `AUDIO_SYSTEM_CTRL_REG` will mute all sounds.
 
 ---
-## 9. VRAM BackGround Information
-Background VRAM is meant to be tiled/mirrored to give the illusion of infinite worlds, VRAM flags in `$0x20100` (`VRAM_FLAGS_REG`) control this effect.
-Sprite data is always stored in Game Data section of memory, never in VRAM BackGround.
-VRAM-BACK is more like a large dynamic sprite vs the static 16X16 sprites in game data.
-
-
----
 ## 10. Sprite System
 
 ### Sprite Definition:
@@ -326,7 +454,7 @@ VRAM-BACK is more like a large dynamic sprite vs the static 16X16 sprites in gam
 *   Larger entities can be formed by software by combining multiple sprites.
 #### Color Depth:
 *   Sprites use an 8-bit index per pixel, referencing a global 256-color palette.
-*   The VRAM BackGround also uses this same global palette (see **Memory Layout** VRAM BackGround Range for "256 possible colors").
+*   The VRAM background also uses this same global palette (see **Memory Layout** VRAM background range for "256 possible colors").
 #### Pixel Data Format:
 *   Each 16x16 sprite requires 256 bytes of data (16 pixels * 16 pixels * 1 byte/pixel).
 *   Pixel data is stored row by row, with the first byte being the top-left pixel of the sprite.
@@ -359,7 +487,7 @@ The system processes these entries in order (entry 0 to entry 255) to draw sprit
     - Bit 0: Flip-X (0 = Normal, 1 = Flipped Horizontally)
     - Bit 1: Flip-Y (0 = Normal, 1 = Flipped Vertically)
     - Bit 2: Priority
-        - 0 = Normal Priority: Sprite is drawn behind VRAM background elements that also have high priority. Sprite is drawn in front of VRAM background elements with normal/low priority.
+        - 0 = Normal Priority: Sprite is drawn behind VRAM background pixels (if the VRAM pixel is not transparent and the sprite has normal priority). If the sprite has high priority, it's drawn in front of the VRAM background.
         - 1 = High Priority: Sprite is drawn in front of ALL VRAM background elements, regardless of background priority.
     - Bits 3-7: Reserved for future use (e.g., palette bank selection for advanced palette modes, blending options). Must be set to 0 for compatibility.
 
@@ -376,8 +504,14 @@ The system processes these entries in order (entry 0 to entry 255) to draw sprit
 
 ### Interaction with VRAM Background:
 Sprites are rendered onto the display along with the VRAM background.
-The 'Priority' bit in the sprite's Attribute Flags (Byte 3, Bit 2) determines layering against VRAM background elements that may also have varying priority levels (this implies the VRAM background system can assign priority to its tiles/elements).
-Generally, sprites are drawn "on top" of the background, but specific interactions depend on the sprite's priority bit and the priority of the underlying background pixel. Color index `$00` (transparent) in a sprite always allows the background (or lower priority sprites) to show through.
+The 'Priority' bit in the sprite's Attribute Flags (Byte 3, Bit 2) determines layering.
+Generally, sprites are drawn "on top" of the VRAM background.
+- If a sprite has **Normal Priority (0)**:
+    - It is drawn *behind* any non-transparent VRAM background pixel at the same location.
+    - It is drawn *in front* of transparent VRAM background pixels (color index `$00`).
+- If a sprite has **High Priority (1)**:
+    - It is drawn *in front* of all VRAM background pixels, regardless of whether the VRAM pixel is transparent or not.
+Color index `$00` (transparent) in a sprite's pixel data always allows whatever is behind it (VRAM background or lower priority sprites) to show through.
 
 ---
 ## 11. Color Palette System
@@ -462,27 +596,132 @@ A dedicated register controls the text layer's visibility and priority.
 *   `**R3G3B2:**` A color format where 3 bits are used for Red, 3 bits for Green, and 2 bits for Blue, allowing for 256 possible colors (2^3 * 2^3 * 2^2 = 8 * 8 * 4 = 256).
 
 ---
+
+## Developing Games via Hex Editor
+This section is dedicated to developers who wish to program games for the FC-8 directly using a hex editor. This approach is challenging but offers a deep understanding of the hardware and complete control over the resulting byte code.
+
+### Core Concepts for Hex Editing
+*   **Cartridge Structure is Key:** Thoroughly understand Section 4: "Cartridge Format". You will be manually constructing the cartridge header and laying out data for program code, sprites, sound, etc.
+*   **CPU Instructions as Bytes:** You will use the Opcode Table (Section 5) to write your program logic. Each instruction and its operands translate directly to a sequence of bytes. Remember the CPU is Little Endian.
+*   **Memory Addresses:** All special registers, VRAM, and cartridge data are accessed via their absolute memory addresses as defined in this document.
+*   **Asset Management:** Sprite pixel data, sound data, and map data must be formatted exactly as specified and placed at the correct offsets within the cartridge, with the header pointing to them.
+
+### Tools of the Trade
+*   **Hex Editor:** A good hex editor is your primary tool (e.g., HxD, Hex Fiend, GHex). It should allow you to easily view and edit bytes, insert/delete bytes, and save raw binary files.
+*   **Calculator:** A programmer's calculator for hex/decimal conversions is invaluable.
+*   **(Optional) Assembler:** While the goal here is hex editing, a simple cross-assembler that can output raw binary (not an object file format) for the FC-8's ISA can be a significant time-saver for writing the code portion. You would then use the hex editor to combine this code with your manually crafted header and assets.
+*   **(Optional) Helper Scripts:** Small scripts (e.g., Python) can help automate tasks like calculating checksums, inserting sprite data, or formatting data sections.
+
+### Example: "Display a Single Sprite" Program (Conceptual)
+This is a simplified, conceptual example of how one might structure a minimal cartridge to display one sprite. Addresses are relative to cartridge start (`$0x30000`).
+
+1.  **Cartridge Header (First 256 bytes - `$0000` to `$00FF` relative to cart start):**
+    *   `$0000-$0003`: "FC8C" (Magic Number: `46 43 38 43`)
+    *   `$0004-$0023`: "My Sprite Test" + padding (Game Title: e.g., `4D 79 20 53 ... 00`)
+    *   `$0024-$0025`: `01 00` (Version 1.0)
+    *   `$0026-$0027`: `00 01` (Program Entry Point: `$0100` relative to cart, so absolute `$30100`)
+    *   `$0028-$0029`: `00 01` (Offset to Program Code: `$0100` relative)
+    *   `$002A-$002B`: (Size of program code, e.g., `10 00` for 16 bytes)
+    *   `$002C-$002D`: `00 02` (Offset to Sprite Data: `$0200` relative, so absolute `$30200`)
+    *   `$002E-$002F`: `00 01` (Size of Sprite Data: 256 bytes for one 16x16 sprite)
+    *   Other offsets/sizes (Sound, Map) can be zero if unused.
+    *   Fill remaining header bytes up to `$00FF` with `00`.
+
+2.  **Program Code (Starts at `$0100` relative to cart start):**
+    This code will set up one sprite in the Sprite Attribute Table.
+    *   Target Sprite Entry 0: `$20200`
+    *   Sprite ID: `$00` (first sprite in our sprite data)
+    *   X-Pos: `$50` (80 decimal)
+    *   Y-Pos: `$40` (64 decimal)
+    *   Attributes: `$00` (Normal, no flip)
+
+    Hex code sequence (example):
+    *   `A9 00`       (LDA #$00 ; Load Sprite ID 0)
+    *   `8D 00 20`    (STA $20200 ; Store to Sprite Entry 0, Byte 0 - Sprite ID)
+    *   `A9 50`       (LDA #$50 ; Load X-Position)
+    *   `8D 01 20`    (STA $20201 ; Store to Sprite Entry 0, Byte 1 - X-Pos)
+    *   `A9 40`       (LDA #$40 ; Load Y-Position)
+    *   `8D 02 20`    (STA $20202 ; Store to Sprite Entry 0, Byte 2 - Y-Pos)
+    *   `A9 00`       (LDA #$00 ; Load Attributes)
+    *   `8D 03 20`    (STA $20203 ; Store to Sprite Entry 0, Byte 3 - Attributes)
+    *   `A9 01`       (LDA #$01 ; Enable SCREEN_CTRL_REG display)
+    *   `8D 00 20`    (STA $20800) ; Write to SCREEN_CTRL_REG (assuming $20800 is its address)
+    *   `4C XX YY`    (JMP to self for infinite loop, e.g., `4C 1C 01` if this JMP is at `$011C` relative)
+
+3.  **Sprite Data (Starts at `$0200` relative to cart start):**
+    *   256 bytes defining a 16x16 sprite. For example, a simple filled square using color index `$0F`:
+        `0F 0F 0F ... (16 times) ... 0F` (repeated for 16 rows).
+        The first byte `$30200` is pixel (0,0), `$30201` is (1,0) ... `$3020F` is (15,0), `$30210` is (0,1) etc.
+
+This example would then be saved as a single binary file. When loaded by the FC-8, it would (hopefully) display your sprite. Debugging involves checking memory locations and register values if an emulator or hardware debugger is available, or by writing pixel values to screen as a form of `printf` debugging.
+
+Hex editing is a meticulous process requiring patience and attention to detail. Good luck!
+
+---
+
+## FPGA Implementation Guidance
+This section provides considerations for engineers implementing the FC-8 fantasy console on an FPGA (Field-Programmable Gate Array) using a hardware description language like Verilog or VHDL.
+
+### Core Philosophy
+The FC-8 is designed to be simple enough for FPGA implementation, reminiscent of 8-bit era consoles. The focus should be on accurately replicating the behavior of the CPU, memory map, and peripheral interactions as defined in this specification.
+
+### CPU Implementation
+As noted in Section 5, the FC-8 CPU (including its fetch-decode-execute cycle and instruction timings) will be a significant module. Each instruction is typically a state machine. Careful attention must be paid to flag interactions and register updates.
+
+### Memory System
+*   **Memory Resources:**
+    *   **Stack RAM (`$0x00000 - $0x0FFFF`, 64KB):** Can be implemented using FPGA Block RAM (BRAM). Access time needs to be fast, ideally single-cycle for the CPU.
+    *   **VRAM Background (`$0x10000 - $0x1FFFF`, 64KB):** Also suitable for BRAM. Dual-port BRAM might be beneficial if the video generation circuitry needs to read VRAM simultaneously with CPU writes, though careful timing management can allow single-port BRAM.
+    *   **Special Registers range (`$0x20000 - $0x2FFFF`):** This range is not true RAM but a memory-mapped I/O space. Each register or register group will be custom logic. Address decoding logic will route CPU read/write signals to the appropriate hardware module.
+    *   **Cartridge ROM (`$0x30000 - $0xFFFFF`, 832KB):** This is the largest memory block.
+        *   For smaller FPGAs, this might require external storage like a Flash memory chip, with a memory controller to interface it to the CPU's address bus.
+        *   Larger FPGAs might have enough BRAM or on-chip Flash to hold smaller game ROMs directly.
+        *   Consider a bootloader mechanism if cartridges are loaded from external media (e.g., SD card) into RAM or a dedicated Cartridge RAM region (if not executing directly from Flash). This spec assumes direct mapping for simplicity.
+*   **Memory Access Timing:** The CPU's 5MHz clock dictates memory cycle times. Ensure that memory (BRAM or external) can meet the setup and hold times required by the CPU's bus cycle. Wait states might be needed if accessing slower external memory.
+
+### Video Generation
+*   **Pixel Clock:** A separate, faster pixel clock will be needed to drive the video output (e.g., for VGA or HDMI). This clock will be synchronized with the 5MHz system clock. For a 256x240 @ 60Hz display (plus blanking intervals), a pixel clock of around 5-6 MHz is common (e.g., ~25MHz master clock divided down).
+*   **Timings (HSYNC, VSYNC, Blanking):** Standard video timings (horizontal sync, vertical sync, front/back porch) for the target display resolution (256x240 or 256x256) must be generated.
+*   **Data Fetching:**
+    *   VRAM data for the background layer needs to be fetched row by row, pixel by pixel, according to scroll registers and other VRAM control flags.
+    *   Sprite data needs to be fetched from the Sprite Attribute Table (in Special Registers) and then the sprite pixel data from Cartridge ROM. This involves iterating through active sprites, checking their X/Y positions against the current scanline, and rendering their pixels (respecting transparency and priority).
+    *   Text character codes and attributes are fetched from the Character Map, and glyphs from an internal font ROM (which can be implemented as a ROM block in the FPGA).
+*   **Palette:** The 256-entry color palette (R3G3B2) is stored in registers or small BRAM. Fetched color indices are looked up here to get the final R,G,B values for the DAC or digital video output.
+*   **Layer Compositing:** The hardware must correctly composite the VRAM background, sprites, and text layer based on transparency and priority rules.
+
+### Audio System
+*   Each of the 4 audio channels should be implemented as a separate digital sound generation module.
+*   Registers for frequency, volume, waveform, and control will gate and shape the output of oscillators (for square, saw, triangle) or a Linear Feedback Shift Register (LFSR for noise).
+*   The outputs of the channels are typically mixed (summed) and then passed through a master volume control.
+*   For an FPGA, the final output might be a Pulse Width Modulated (PWM) signal that can be low-pass filtered externally to produce analog audio, or a direct digital audio stream (like I2S if an external DAC is used).
+
+### Input System
+*   The Gamepad State Register (`$0x20600`) is implemented as a set of flip-flops that latch the state of physical buttons connected to FPGA pins. Debouncing logic for button inputs is essential.
+
+### Clocking and Reset
+*   A master clock input to the FPGA will be divided down to generate the 5MHz system clock for the CPU and peripherals. As mentioned, a separate pixel clock will also be derived.
+*   A global reset signal should initialize all CPU registers, special function registers (to their defined default states), and internal state machines.
+
+### General FPGA Design
+*   **Modularity:** Design the system with clear modules (CPU, memory controller, VRAM controller, sprite engine, audio channels, etc.) for easier development and debugging.
+*   **Address Decoding:** A central address decoder will take the CPU's memory address and generate chip select / enable signals for the various memory regions and special registers.
+*   **Testing:** Simulate each module thoroughly before synthesizing to hardware. On-chip logic analyzers (like Xilinx ChipScope or Intel SignalTap) are invaluable for debugging on the actual FPGA.
+
+---
 ## 14. List Of Special Registers
 
 This section lists memory-mapped special registers used for controlling various hardware features of the FC-8.
 
-`$0x20000` - `$0x200FF` :: **Screen Bounding Bottom**
-*   All 256 bytes represents the bounding line offset for the bottom of the screen for each corresponding X of (X,Y). The value 0 signifies no offset thus the bottom most pixel is the boundary line. the value 255 signifies a Y-dimensional barrier.
-    ```
-           ||
-           ||
-           ||  
-________---||
-0,0,0,0,16,255
-    ```
+`$0x20000` - `$0x200FF` :: **Screen Bounding Bottom Offsets** (R/W)
+*   Each byte `$0x20000 + X` specifies the upward vertical offset (0-255) for the bottom display boundary of screen column X. A value of 0 means no offset. See Section 8 'VRAM background Information' for a detailed explanation.
 
 `$0x20100` :: `VRAM_FLAGS_REG` (VRAM Control Flags Register) (R/W)
 *   Bit 0: Mirror-X (0=Off, 1=On for VRAM background tiling)
 *   Bit 1: Mirror-Y (0=Off, 1=On for VRAM background tiling)
 *   Bit 2: Flip-X (0=Off, 1=On for VRAM background tiling - typically applies before mirroring)
 *   Bit 3: Flip-Y (0=Off, 1=On for VRAM background tiling - typically applies before mirroring)
-*   Bits 4-7: Tile Offset (Signed 4-bit value, -8 to +7. Coarse tile-map offset or page selection for VRAM background.)
-(See **VRAM BackGround Information** section for details)
+*   Bits 4-7: Page Select / Coarse Y Offset (Signed 4-bit value, -8 to +7. Adds (value * 16) to Y scroll.)
+(See Section 8 'VRAM background Information' for full details)
 
 `$0x20101` :: `VRAM_SCROLL_X_REG` (VRAM Fine Scroll X Register) (R/W)
 *   8-bit value (0-255) for fine horizontal pixel scroll of VRAM background.
@@ -496,7 +735,7 @@ ________---||
 *   256 entries, 4 bytes each. Format: `[Sprite ID][X-Pos][Y-Pos][Attribute Flags]`.
 (See **Sprite System** section for full details)
 
-`$0x20600` :: `GAMEPAD_STATE_REG` (Gamepad State Register) (R/W)
+`$0x20600` :: `GAMEPAD_STATE_REG` (Gamepad State Register) (Read-only)
 *   8-bit register reflecting the current state of gamepad buttons.
 (See **Input System** section for details)
 
@@ -512,9 +751,7 @@ ________---||
 (See **Audio System** section for detailed breakdown)
 
 `$0x20800` :: `SCREEN_CTRL_REG` (Screen Control Register) (R/W)
-*   Bit 0: Display Enable
-*   Bit 1: Active Display Mode (256x240 vs 256x256).
-(See **Clock, Timing, and Synchronization** or display sections for related info)
+*   Controls master display enable and active resolution mode (256x240 vs 256x256). See Section 6 'Clock, Timing, and Synchronization' under 'Master Display Control' for full details.
 
 `$0x20810` :: `PALETTE_ADDR_REG` (Palette Address Register) (Write-only)
 *   Selects palette index (0-255) for `PALETTE_DATA_REG`. Auto-increments.
@@ -528,7 +765,7 @@ ________---||
 (See **Clock, Timing, and Synchronization** section for details)
 
 `$0x20830` :: `RAND_NUM_REG` (Random Number Generator Register) (R/W)
-*   Reading returns 8-bit pseudo-random number. Writing re-seeds.
+*   Reading returns an 8-bit pseudo-random number. Writing any value re-seeds the PRNG. See Section 6 'Clock, Timing, and Synchronization' under 'Random Number Generator' for more details.
 
 `$0x20840` :: `TEXT_CTRL_REG` (Text Control Register) (R/W)
 *   Bit 0: Text Layer Enable
