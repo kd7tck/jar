@@ -1,4 +1,4 @@
-FANTASY CONSOLE VIRTUAL MACHINE SPEC SHEET VERSION 0.4.0
+FANTASY CONSOLE VIRTUAL MACHINE SPEC SHEET VERSION 0.5.0
 
 ------------------------------------------------------------
 
@@ -34,6 +34,7 @@ Table of Contents
 * v0.2.0 (In Progress): Structural improvements, clarifications, and additions.
 * v0.3.0: Added hex editing and FPGA info, cleaned up document.
 * v0.4.0: Comprehensive update addressing all identified gaps. Added interrupt handling, complete instruction set, tilemap support, detailed audio specifications, error handling, enhanced input and text systems, precise timing, debugging tools, cartridge extensions, versioning strategy, example programs, and community resources. Ensures backward compatibility with v0.3.0 cartridges.
+* v0.5.0 (FPGA Detail Pass): Extensive review and refinement of all sections to provide sufficient detail for hardware (FPGA) implementation. Added conceptual timing diagrams, clarified SFR behavior including reset states and side-effects, and enhanced operational details for CPU, memory system, graphics, audio, and interrupt handling. Focused on unambiguous specifications for hardware engineers.
 
 ------------------------------------------------------------
 
@@ -42,6 +43,8 @@ Table of Contents
 The FC-8 (Fantasy Console 8-bit) is a virtual machine designed for creating and playing retro-style video games, inspired by 8-bit consoles. This specification details its hardware architecture, memory organization, graphics, audio, input mechanisms, interrupt system, and error handling. It serves as a guide for developers building games, emulators, or development tools, targeting hobbyists, students, and retro game enthusiasts. Supported game genres include platformers, puzzlers, shoot 'em ups, and text adventures.
 
 The FC-8 combines retro aesthetics with modern usability, offering a simple yet flexible platform. Version 0.4.0 enhances the original design with new features while maintaining compatibility with existing cartridges. Community forums, GitHub repositories, and tools support development (see Section 21).
+
+Version 0.5.0 of this specification has undergone extensive review and refinement, with a particular focus on providing the level of detail required for hardware engineers undertaking an FPGA or custom hardware implementation. This includes more precise definitions of register behaviors, reset states, timing details, and operational semantics for all major subsystems.
 
 ------------------------------------------------------------
 
@@ -59,19 +62,51 @@ CPU Logical Address Space
 
 Bank Switching
 * PAGE_SELECT_REG ($00FE):
-  - Bits 0-4: Select one of 32 pages (0-31). Bits 5-7 reserved (write 0, read 0).
-  - Physical address: Physical = (PAGE_SELECT_REG[4:0] * 0x8000) + (Logical - 0x8000).
-  - Example: PAGE_SELECT_REG[4:0] = 2, logical $8100 maps to physical $10100.
-  - If PAGE_SELECT_REG=0, $8000-$FFFF aliases $000000-$007FFF.
+  - Bits 0-4: Select one of 32 pages (0-31) for the CPU logical address window $8000-$FFFF. Bits 5-7 are reserved (writes should be 0, reads will be 0).
+  - Physical address calculation for $8000-$FFFF window:
+    `PhysicalAddress = (PAGE_SELECT_REG[4:0] * 0x008000) + (LogicalAddress - 0x8000)`
+  - Example: If `PAGE_SELECT_REG[4:0] = 2` (binary `00010`), and logical address is `$8100`:
+    `PhysicalAddress = (2 * 0x8000) + ($8100 - 0x8000) = 0x010000 + 0x0100 = 0x010100`.
+  - If `PAGE_SELECT_REG[4:0] = 0`, the paged window $8000-$FFFF logically maps to physical addresses $000000-$007FFF. This means CPU logical addresses $0000-$7FFF and $8000-$FFFF (with PAGE_SELECT_REG=0) both access the same physical Fixed RAM Block.
+  - The `PAGE_SELECT_REG` value is used directly in the higher-order bits of the physical address generation logic. There are no additional memory access delays or wait states inherent to accessing a paged memory region compared to the fixed RAM block ($0000-$7FFF) or Cartridge ROM, other than those specified by the memory type itself (e.g., BRAM vs. Flash ROM timings, see Section 6 and 19.2). The selection of a page is effectively instantaneous once `PAGE_SELECT_REG` is updated, affecting the next relevant memory cycle.
+
+Conceptual Bank Switching Timing:
+cpu_clk:       __/¯¯¯\__/¯¯¯\__/¯¯¯\__/¯¯¯\__/¯¯¯\__/¯¯¯\__
+CPU Op:        <INST1: STA $00FE> <INST2: LDA $8000>
+$00FE Write:   .............WR....                       (PAGE_SELECT_REG updated)
+Addr Bus ($8+):<===OLD_PAGE_ADDR==X====NEW_PAGE_ADDR====>  (Address bus for $8000-$FFFF range)
+Data Bus:      <======VAL1=======> <=VALID_FROM_NEW_PG=>
+
+Cycle:         | C1  | C2  | C3  | C1' | C2' | C3' | C4' |
+STA $00FE:     |Fetch| ZPAd| Write|                     (Example 3 cycles)
+LDA $8000:                           |Fetch|Paged| Paged | Paged | (Example 4 cycles)
+                                           | Addr| Data  | Exec  |
+Notes:
+- Write to PAGE_SELECT_REG ($00FE) completes in Cycle C3 of the STA instruction.
+- The physical address generated for the logical address $8000 (during Cycle C2' of the LDA instruction)
+  immediately uses the new PAGE_SELECT_REG value for page calculation.
+- This diagram assumes the CPU uses the paged window immediately after the bank switch.
 
 Physical Memory Allocation
-* $000000-$007FFF (Page 0): Fixed RAM Block (CPU $0000-$7FFF).
-* $008000-$00FFFF (Page 1): Reserved (e.g., battery-backed save RAM).
-* $010000-$017FFF (Page 2): VRAM (bitmap lines 0-127 or tilemap data).
-* $018000-$01FFFF (Page 3): VRAM (bitmap lines 128-255 or tile patterns).
-* $020000-$027FFF (Page 4): Special Function Registers (SFRs).
-* $028000-$02FFFF (Page 5): Additional SFRs (text character map, tilemap).
-* $030000-$0FFFFF (Pages 6-31): Cartridge ROM (832 KiB, code, assets).
+The 1MB physical address space is allocated as follows. Note that Page 0 is also directly accessible via CPU logical addresses $0000-$7FFF.
+
+| Physical Page | Physical Address Range | Size  | CPU Logical Access Window | PAGE_SELECT_REG[4:0] Value | Primary Content             |
+|---------------|------------------------|-------|---------------------------|----------------------------|-----------------------------|
+| 0             | $000000 - $007FFF      | 32KiB | $0000-$7FFF (Fixed)       | N/A (Direct)               | Fixed RAM Block             |
+|               |                        |       | $8000-$FFFF (Paged)       | 0                          | (Alias to Fixed RAM Block)  |
+| 1             | $008000 - $00FFFF      | 32KiB | $8000-$FFFF (Paged)       | 1                          | Reserved for Save RAM etc.  |
+| 2             | $010000 - $017FFF      | 32KiB | $8000-$FFFF (Paged)       | 2                          | VRAM (e.g., Bitmap Lo / Tile Patterns) |
+| 3             | $018000 - $01FFFF      | 32KiB | $8000-$FFFF (Paged)       | 3                          | VRAM (e.g., Bitmap Hi / Tile Patterns) |
+| 4             | $020000 - $027FFF      | 32KiB | $8000-$FFFF (Paged)       | 4                          | Special Function Registers (SFRs) |
+| 5             | $028000 - $02FFFF      | 32KiB | $8000-$FFFF (Paged)       | 5                          | Additional SFRs (Text Map, Tilemap Defs) |
+| 6-31          | $030000 - $0FFFFF      | 832KiB| $8000-$FFFF (Paged)       | 6 through 31               | Cartridge ROM               |
+
+* **Page 0 ($000000-$007FFF):** Fixed RAM Block. Always directly mapped to CPU logical addresses $0000-$7FFF. Also accessible via the paged window if `PAGE_SELECT_REG[4:0]` is 0.
+* **Page 1 ($008000-$00FFFF):** Reserved (e.g., for battery-backed save RAM or future expansion). If this page is selected (`PAGE_SELECT_REG[4:0] = 1`) and accessed, reads return $FF and writes are ignored by the memory system, as per general unmapped memory access rules (Section 14).
+* **Pages 2-3 ($010000-$01FFFF):** VRAM. Used for screen bitmap data and/or tile pattern data.
+* **Page 4 ($020000-$027FFF):** Special Function Registers (SFRs) controlling various hardware aspects.
+* **Page 5 ($028000-$02FFFF):** Additional SFRs, including the Text Character Map and Tilemap definition data.
+* **Pages 6-31 ($030000-$0FFFFF):** Cartridge ROM space for game code and assets.
 
 System State on Reset/Power-On
 * CPU Registers:
@@ -111,7 +146,7 @@ Header Fields
 * $030034-$030035 (2 bytes): Offset to Map Data (physical offset).
 * $030036-$030037 (2 bytes): Size of Map Data (bytes).
 * $030038 (1 byte): Initial Code Page Select (bits 0-4 set PAGE_SELECT_REG, bits 5-7 zero).
-* $030039 (1 byte): Minimum VM Version (e.g., $04 for v0.4.0).
+* $030039 (1 byte): Minimum VM Version (e.g., $05 for v0.5.0).
 * $03003A (1 byte): Region Code ($00=universal, $01=NTSC, $02=PAL).
 * $03003B-$0300F9 (191 bytes): Reserved (write zeros, ignore on read).
 * $0300FA-$0300FB (2 bytes): Checksum (16-bit CRC of $030000-$0FFFFF, excluding this field).
@@ -144,23 +179,25 @@ Overall Design
 * Address Space: 16-bit logical ($0000-$FFFF), 1MB physical via bank switching.
 
 Registers
-* Program Counter (PC): 16-bit, logical address of next instruction.
-* Stack Pointer (SP): 16-bit, ascending stack in $0100-$7FFF, initialized to $0100.
+* Program Counter (PC): 16-bit, logical address of next instruction. Little Endian. When pushed to stack (e.g., during JSR or interrupt), PCH (high byte) is pushed first, then PCL (low byte). When pulled (e.g., RTS, RTI), PCL is pulled first, then PCH. Increments occur per byte fetched.
+* Stack Pointer (SP): 16-bit, ascending stack in $0100-$7FFF, initialized to $0100. Little Endian. Points to the next free location on the stack. Pushes store data then increment SP. Pulls decrement SP then load data. For 16-bit operations like JSR/RTS or interrupt handling, SP is adjusted by two.
 * Accumulator (A): 8-bit, for arithmetic and logic operations.
 * Index X (X), Y (Y): 8-bit, for indexed addressing.
 * Flag Register (F): 8-bit:
   - Bit 7: N (Negative)
   - Bit 6: V (Overflow)
   - Bit 5: I (Interrupt Disable, 1=disabled)
-  - Bit 4: - (Unused, read 0)
-  - Bit 3: - (Unused, read 0)
-  - Bit 2: - (Unused, read 0)
+  - Bit 4: - (Unused, read 0, writes ignored)
+  - Bit 3: - (Unused, read 0, writes ignored)
+  - Bit 2: - (Unused, read 0, writes ignored)
   - Bit 1: Z (Zero)
   - Bit 0: C (Carry)
 * PAGE_SELECT_REG ($00FE): 8-bit, selects physical page for $8000-$FFFF.
+    *   **Timing:** A write to `PAGE_SELECT_REG` (e.g., via `STA $00FE`, 3 cycles) completes within the instruction's execution. The change to the physical address mapping for the $8000-$FFFF window is immediate and combinatorially affects the address bus for any subsequent memory cycle. Thus, if an instruction writes to `PAGE_SELECT_REG`, the very next CPU cycle (e.g., the fetch of the next instruction's opcode) that accesses the $8000-$FFFF range will use the new page.
+    *   **Restrictions:** No explicit hardware restrictions prevent writing to `PAGE_SELECT_REG` immediately before an instruction that uses the paged window. Software must ensure that the instruction fetching or operand access through the paged window uses the intended page. It is generally safe but requires careful code sequencing.
 
 Instruction Set Architecture (ISA)
-Instructions are 1-3 bytes: opcode + optional operands. The original partial opcode table is expanded to include all instructions.
+Instructions are 1-3 bytes: opcode + optional operands.
 
 Complete Opcode Table
 Mnemonic	Opcode	Bytes	Mode		Cycles	Flags		Description
@@ -173,17 +210,17 @@ AND abs		$2D	3	Absolute	4	N,Z		AND from absolute
 ASL A		$0A	1	Accumulator	2	N,Z,C		Shift left A
 ASL zp		$06	2	Zero-Page	5	N,Z,C		Shift left zero-page
 ASL abs		$0E	3	Absolute	6	N,Z,C		Shift left absolute
-BCC rel		$90	2	Relative	2/3*	-		Branch if C clear
-BCS rel		$B0	2	Relative	2/3*	-		Branch if C set
-BEQ rel		$F0	2	Relative	2/3*	-		Branch if Z set
+BCC rel		$90	2	Relative	2/3/4*	-		Branch if C clear
+BCS rel		$B0	2	Relative	2/3/4*	-		Branch if C set
+BEQ rel		$F0	2	Relative	2/3/4*	-		Branch if Z set
 BIT zp		$24	2	Zero-Page	3	N,V,Z		Test bits
 BIT abs		$2C	3	Absolute	4	N,V,Z		Test bits
-BMI rel		$30	2	Relative	2/3*	-		Branch if N set
-BNE rel		$D0	2	Relative	2/3*	-		Branch if Z clear
-BPL rel		$10	2	Relative	2/3*	-		Branch if N clear
+BMI rel		$30	2	Relative	2/3/4*	-		Branch if N set
+BNE rel		$D0	2	Relative	2/3/4*	-		Branch if Z clear
+BPL rel		$10	2	Relative	2/3/4*	-		Branch if N clear
 BRK		$00	1	Implied		7	I		Software interrupt
-BVC rel		$50	2	Relative	2/3*	-		Branch if V clear
-BVS rel		$70	2	Relative	2/3*	-		Branch if V set
+BVC rel		$50	2	Relative	2/3/4*	-		Branch if V clear
+BVS rel		$70	2	Relative	2/3/4*	-		Branch if V set
 CLC		$18	1	Implied		2	C		Clear carry
 CLD		$D8	1	Implied		2	-		Clear decimal (unused)
 CLI		$58	1	Implied		2	I		Clear interrupt disable
@@ -259,12 +296,24 @@ TSX		$BA	1	Implied		2	N,Z		Transfer SP to X
 TXA		$8A	1	Implied		2	N,Z		Transfer X to A
 TXS		$9A	1	Implied		2	-		Transfer X to SP
 TYA		$98	1	Implied		2	N,Z		Transfer Y to A
-HLT		$02	1	Implied		-	-		Halt CPU until reset/interrupt
+HLT		$02	1	Implied		2**		Halt CPU until reset/interrupt
 
 *Notes:
-- *Branch taken: +1 cycle.
-- *Indexed addressing: +1 cycle if page boundary crossed.
-- Undefined opcodes: Treated as NOP (2 cycles).
+- Cycle counts are nominal CPU clock cycles (5MHz clock).
+- **Branch Timing (BCC, BCS, BEQ, BMI, BNE, BPL, BVC, BVS):**
+    - Base: 2 cycles if branch is not taken.
+    - Branch Taken: +1 cycle (total 3 cycles).
+    - Branch Taken + Page Boundary Crossed: +1 additional cycle if the target address of the branch is on a different 256-byte memory page than the instruction *following* the branch instruction (total 4 cycles).
+- **Indexed Addressing Penalty (abs,X; abs,Y):**
+    - For instructions like LDA, STA, ADC, etc., using `absolute,X` or `absolute,Y` addressing.
+    - +1 cycle if the addition of the index register to the base address causes a page crossing (i.e., `(BaseAddr & $FF00) != ((BaseAddr + IndexReg) & $FF00)`). This is reflected in the table as `4/5*` or similar, where `5` includes this penalty.
+- **Memory Access Variations & Wait States:**
+    - The listed cycle counts assume memory accesses to standard RAM (Fixed RAM, typically 1 CPU cycle access after decode) or Cartridge ROM.
+    - Cartridge ROM access inherently takes 4 CPU cycles per byte as specified in Section 6. Instruction fetches and operand reads from ROM will reflect this. (e.g., An `LDA #val` (2 bytes, 2 cycles) from ROM will take 2 * 4 = 8 CPU cycles for its bytes if ROM is slow, but the CPU core itself still counts it as 2 core cycles for instruction processing, with the memory controller handling the wait states. The table shows CPU core cycles). *Self-correction: The cycle counts in the table should be the final, effective cycles from CPU perspective.* The provided cycle counts in the table are effective CPU cycles, assuming the memory system responds within the typical cycle for that memory type (e.g. BRAM is fast, ROM is slower). For instance, an LDA abs ($AD) from ROM is listed as 4 cycles; these are the total CPU cycles.
+    - Accesses to Special Function Registers (SFRs at physical $020000-$027FFF) are generally completed within the nominal instruction cycle time.
+    - Accessing VRAM (physical $010000-$01FFFF) outside of VBLANK periods may incur additional CPU wait states if the video controller is simultaneously reading VRAM. This is implementation-dependent (see Section 19.2) and would extend effective instruction time.
+- Undefined opcodes: Treated as NOP (no operation, consumes 2 cycles, PC increments, no other registers or flags affected).
+- **HLT Instruction:** Takes 2 cycles to fetch and decode, then halts CPU clock cycling.
 
 Addressing Modes
 * Immediate: Data in operand (e.g., LDA #$A5).
@@ -273,6 +322,41 @@ Addressing Modes
 * Indexed: Base address + X/Y (e.g., LDA $1000,X).
 * Indirect: Address stored at operand (e.g., JMP ($FFFC)).
 * Relative: Signed 8-bit offset for branches (-128 to +127).
+
+CPU Operational Details
+
+*   **Atomicity of Register Access:**
+    *   **16-bit CPU Registers (PC, SP):** These registers are manipulated byte-wise by the 8-bit datapath.
+        *   **PC:** When PCH or PCL is modified directly by an instruction (relevant for JMP, JSR, RTS, RTI, interrupts), or when PC is pushed/pulled:
+            *   Stack push (JSR, BRK, Interrupt): PCH is pushed, then SP is decremented. PCL is pushed, then SP is decremented. (Order: SP, PCH, SP--, PCL, SP-- assuming SP points to last occupied). More accurately: PCH onto stack at SP, SP--; PCL onto stack at SP, SP--. Or if SP points to next free: Store PCH at SP, SP++; Store PCL at SP, SP++. Given SP is $0100 and grows upwards, it points to next free. So: MEM[SP] = PCL, SP++; MEM[SP] = PCH, SP++. (Section 13 says push PC high, then low. So: MEM[SP]=PCH, SP++; MEM[SP]=PCL, SP++.)
+            *   Stack pull (RTS, RTI): Following Section 13 logic for PC high/low push: SP--, PCL=MEM[SP]; SP--, PCH=MEM[SP]. (Order: PCL pulled, then PCH).
+            *   Interrupts are recognized at instruction boundaries. Operations that modify PC internally (JMP, JSR, RTS, RTI, branches) complete their PC modification before an interrupt is serviced.
+        *   **SP:** Stack operations (PHA, PLA, JSR, RTS, interrupts) modify SP by one or two bytes. These operations are atomic with respect to interrupts, meaning SP will be consistent before an interrupt is serviced.
+    *   **16-bit SFRs (e.g., FRAME_COUNT_LO/HI_REG $020820-$020821):**
+        *   These are read and written as two separate 8-bit CPU accesses.
+        *   **Reading:** For read-only 16-bit SFRs like `FRAME_COUNT_LO/HI_REG`, to ensure atomicity, reading the low byte (`FRAME_COUNT_LO_REG`) should internally latch the current value of the high byte. A subsequent CPU read of the high byte (`FRAME_COUNT_HI_REG`) will then return this latched value, ensuring a consistent 16-bit snapshot even if the counter increments between the two CPU read operations.
+        *   **Writing:** For R/W 16-bit SFRs (none currently defined), a similar mechanism would be advisable: writing to the low byte could store the value in a temporary latch, and a subsequent write to the high byte completes the 16-bit write. Alternatively, writes could take effect immediately per byte. (This needs definition if such SFRs are added).
+
+*   **Flag Register (F) Updates & Behavior:**
+    *   The "Flags" column in the opcode table describes which flags are affected by each instruction.
+    *   **N (Negative):** Generally set if bit 7 of the result of an operation is 1; otherwise cleared. For BIT, loaded from bit 7 of the tested memory value.
+    *   **V (Overflow):** Generally set if a signed arithmetic operation (ADC, SBC) results in an overflow into the sign bit; otherwise cleared. For BIT, loaded from bit 6 of the tested memory value. Cleared by CLV.
+    *   **I (Interrupt Disable):** Set by SEI, BRK, and when an NMI or IRQ is serviced. Cleared by CLI. Restored by RTI and PLP from stack.
+    *   **Z (Zero):** Generally set if the result of an operation is $00; otherwise cleared.
+    *   **C (Carry):** Generally set if an arithmetic operation results in a carry out of bit 7 (for additions, shifts left) or if a borrow is not required (for subtractions, shifts right); otherwise cleared. Set by SEC, cleared by CLC.
+    *   **Unused Bits (2,3,4 in F Register):** These bits always read as 0. Writes to these bits via an instruction (if one existed) or direct manipulation would be ignored. When F is pushed to the stack (PHP, BRK, interrupt), these bits are pushed as 0. When F is pulled from stack (PLP, RTI), any values for these bits in the byte read from stack are ignored, and the corresponding flags in F remain 0.
+
+*   **HLT Instruction ($02) Behavior:**
+    *   The HLT instruction stops the CPU's clock cycling, effectively halting instruction execution and significantly reducing power consumption (implies clock gating).
+    *   Register contents (A, X, Y, SP, PC, F) and memory (RAM, VRAM) are maintained during halt.
+    *   The CPU will resume execution when a Reset signal is asserted, or when an unmasked interrupt occurs:
+        *   NMI: Always resumes execution.
+        *   IRQ: Resumes execution only if the I (Interrupt Disable) flag in the F register is 0. If I=1, the CPU remains halted even if an IRQ is pending.
+    *   Upon waking from HLT due to an interrupt, the CPU performs the standard interrupt sequence (push PC and F, load PC from vector, 7 cycles) before executing the first instruction of the ISR. If waking due to Reset, the reset sequence occurs.
+
+*   **Simultaneous Operations & Potential Hazards:**
+    *   **PAGE_SELECT_REG and Paged Access:** As detailed in the "Registers" subsection, a write to `PAGE_SELECT_REG` immediately affects the address mapping for subsequent memory cycles in the $8000-$FFFF range. Code must be written with this in mind, as an instruction fetch or operand access immediately following a `PAGE_SELECT_REG` write will use the new page. No hardware interlock prevents this.
+    *   **SFR Side Effects:** Certain SFRs have side effects on read or write (e.g., reading `INT_STATUS_REG` clears pending flags; writing `CHx_CTRL_REG` can trigger an audio event). Consecutive CPU operations on such SFRs must account for these behaviors. For example, a read from `INT_STATUS_REG` followed by another read (without an intervening interrupt) will likely yield $00 for the initially reported pending bits. These are characteristics of the I/O system rather than traditional CPU data pipeline hazards.
 
 Execution Cycle
 1. Fetch: Read opcode from PC, increment PC.
@@ -283,35 +367,95 @@ Execution Cycle
 
 6. Clock, Timing, and Synchronization
 
-CPU Clock
-* Frequency: 5MHz (5,000,000 cycles/second).
-* Cycles per Frame: 5,000,000 / 60 = 83,333 cycles at 60Hz.
+This section details the core clock frequencies, video frame timing, and special registers used for synchronization between the CPU and the video/audio hardware.
 
-Frame Rate
-* Refresh Rate: 60Hz (60 frames/second).
-* Scanlines: 262 total (240 visible, 22 VBLANK).
-* Cycles per Scanline: 83,333 / 262 ~ 318 cycles.
-* VBLANK Duration: 22 scanlines ~ 6,996 cycles.
+**6.1. System Clocks and Derived Timings**
 
-Synchronization Registers
-* $020850 - VSYNC_STATUS_REG (Read-only):
-  - Bit 0: IN_VBLANK (1 during VBLANK).
-  - Bit 1: NEW_FRAME (set at VBLANK start, clears on read).
-  - Bits 2-7: Reserved (read 0).
-* $020820-$020821 - FRAME_COUNT_LO/HI_REG (Read-only): 16-bit frame counter, increments at VBLANK start, wraps at $FFFF.
-* $020830 - RAND_NUM_REG (R/W): 8-bit LFSR-based PRNG, re-seeded on write.
-* $020800 - SCREEN_CTRL_REG (R/W):
-  - Bit 0: Display Enable (1=on).
-  - Bit 1: Mode (0=256x240, 1=256x256).
-  - Bits 2-7: Reserved (write 0, read 0).
+*   **CPU Clock (`cpu_clk`):**
+    *   Frequency: 5MHz (5,000,000 cycles per second). This is the primary clock for CPU operations.
+    *   Cycles per Video Frame (at 60Hz): `5,000,000 Hz / 60 Hz = 83,333` CPU cycles.
+    *   Cycles per Scanline: With 262 total scanlines per frame, `83,333 cycles/frame / 262 lines/frame ~ 318` CPU cycles per scanline.
+    *   These timings are based on the primary screen mode of 256x240 visible lines. Behavior in 256x256 mode is described under `SCREEN_CTRL_REG`.
+*   **Pixel Clock (`pixel_clk`):** Approximately 5.03MHz (see Section 19.1 for derivation). Drives VGA output.
+*   **Audio Clock (`audio_clk`):** 1MHz. Primary clock for audio synthesis (see Section 8 and 19.1).
 
-Memory Access Timing
-* Zero-Page: 3 cycles (read/write).
-* Absolute: 4 cycles (read), 5 cycles (write).
-* Indexed: +1 cycle if page boundary crossed.
-* Cartridge ROM: 4 cycles (read-only).
-* VRAM: 4 cycles (read/write, recommend VBLANK access).
+**6.2. Frame Rate and Video Timing**
 
+*   **Refresh Rate:** 60Hz nominal. The actual rate is determined by `(PixelClock / TotalHorizontalPixelsPerLine) / TotalVerticalLinesPerFrame`. See Section 19.3 for detailed VGA timings.
+*   **Scanlines (256x240 Mode):**
+    *   Total Scanlines: 262 per frame.
+    *   Visible Scanlines: 240 (lines 0-239, where line 0 is the topmost visible line).
+    *   VBLANK Scanlines: 22 lines. The VBLANK period begins after visible scanline 239 is drawn and ends before visible scanline 0 of the next frame. It comprises lines 240 through 261.
+*   **VBLANK Period:** This period includes time allocated for vertical sync pulse, vertical back porch, and vertical front porch, analogous to standard analog video timings. Specifics of these pulse/porch timings in terms of scanlines or pixel clock cycles are further detailed in Section 19.3 (FPGA Implementation Guidance - Video Output). The VBLANK interrupt (NMI) is typically triggered at the start of this period.
+*   **VBLANK Duration (Cycles):** `22 scanlines * ~318 CPU cycles/scanline ~ 6,996` CPU cycles.
+
+**6.3. Synchronization Registers**
+
+These read-only SFRs (Special Function Registers) are located in physical memory Page 4 ($020000-$027FFF) and accessed by the CPU via the paged window $8000-$FFFF with `PAGE_SELECT_REG` set to 4.
+
+*   **$020850 - VSYNC_STATUS_REG (Read-only):**
+    *   Bit 0: `IN_VBLANK`: This bit is set to 1 by hardware when the video timing controller is within the VBLANK period. Specifically, it is high from the start of scanline 240 (the first non-visible line) up to and including scanline 261 (the last non-visible line before the next frame's active display). It is 0 during the active display period (scanlines 0-239 in 256x240 mode; scanlines 0-255 in 256x256 mode).
+    *   Bit 1: `NEW_FRAME`: This bit is set to 1 by hardware at the precise start of scanline 240 (for 256x240 mode) or scanline 256 (for 256x256 mode), concurrent with `IN_VBLANK` transitioning to 1. It signals that a new frame's VBLANK period has just begun and is useful for per-frame logic. This bit is automatically cleared to 0 by hardware immediately after any read operation on `VSYNC_STATUS_REG`.
+    *   Bits 2-7: Reserved (read as 0).
+*   **$020820-$020821 - FRAME_COUNT_LO/HI_REG (Read-only):**
+    *   A 16-bit counter that increments by one at the exact same moment `NEW_FRAME` (Bit 1 of `VSYNC_STATUS_REG`) is set, i.e., at the start of the VBLANK period for each frame.
+    *   The counter wraps from $FFFF to $0000.
+    *   **Atomicity:** Reading these registers follows atomic access rules. A CPU read from `FRAME_COUNT_LO_REG` ($020820) will internally latch the value of `FRAME_COUNT_HI_REG` ($020821) at that instant. A subsequent CPU read from `FRAME_COUNT_HI_REG` will return this latched value, ensuring a consistent 16-bit frame count. (See Section 5, CPU Operational Details).
+*   **$020830 - RAND_NUM_REG (R/W):**
+    *   Provides an 8-bit pseudo-random number.
+    *   **Implementation:** Typically implemented as an 8-bit Galois Linear Feedback Shift Register (LFSR).
+    *   **Clocking:** The LFSR is free-running, clocked continuously by a high-frequency system clock (e.g., `cpu_clk` at 5MHz or `master_clk` at 20MHz) to ensure its value changes rapidly between CPU reads.
+    *   **Re-seeding on Write:** When the CPU writes any value to this register, the 8-bit written value becomes the new seed (current state) for the LFSR.
+*   **$020800 - SCREEN_CTRL_REG (R/W):**
+    *   Bit 0: `Display Enable`:
+        *   `1`: Normal screen display.
+        *   `0`: Blanks the screen (e.g., forces RGB output to black, HSYNC/VSYNC may continue or be blanked based on VGA standards for "no signal" or blanked signal). This should take effect immediately. Toggling this bit does not reset video timings (scanline counters, etc.) but directly gates the final video output.
+    *   Bit 1: `Mode` (Video Resolution):
+        *   `0`: 256x240 visible resolution. Active display is scanlines 0-239. VBLANK period is scanlines 240-261 (22 lines). `NEW_FRAME` and `IN_VBLANK` in `VSYNC_STATUS_REG` operate relative to this 240-line active display.
+        *   `1`: 256x256 visible resolution. Active display is scanlines 0-255. The total number of scanlines per frame remains 262. Consequently, the VBLANK period is reduced to scanlines 256-261 (6 lines). `NEW_FRAME` and `IN_VBLANK` operate relative to this 256-line active display. This mode allows more VRAM to be displayed vertically but offers significantly less CPU time during VBLANK.
+    *   Bits 2-7: Reserved (must be written as 0, reads return 0).
+
+**6.4. Memory Access Timing Considerations**
+
+The base CPU cycle counts for memory operations are defined in Section 5 (Instruction Set Architecture). These are:
+*   Zero-Page Access (e.g., `LDA zp`): 3 cycles.
+*   Absolute Access (e.g., `LDA abs` read): 4 cycles. (Absolute writes like `STA abs` are also 4 cycles; read-modify-write instructions like `INC abs` are 6 cycles).
+*   Cartridge ROM Access: CPU instructions that fetch bytes from ROM are defined with cycle counts that presume the ROM meets the required access time (effectively 4 CPU cycles per byte access from ROM as stated in Section 5's notes).
+*   VRAM Access: 4 cycles per byte read/write (nominal, see Section 9.1.2 for contention details).
+*   SFR Access: Similar to other memory, the instruction cycle count (e.g., 4 cycles for `LDA abs`) is the governing factor. The underlying hardware access to an SFR register itself is typically completed in 1 `cpu_clk` cycle once the address and data are presented.
+
+For hardware implementation, these cycle counts represent the time from the CPU's perspective. The memory controller must ensure that data is returned or written within a timeframe that aligns with these CPU cycle counts, potentially by using faster on-chip memory (like BRAM for Fixed RAM, VRAM, SFRs) or by managing wait states for slower off-chip memory (like external Flash for Cartridge ROM if its intrinsic access time is slower than what the CPU expects).
+
+Conceptual CPU Memory Read Cycle (e.g., LDA abs from BRAM):
+
+cpu_clk:    __/¯¯¯\__/¯¯¯\__/¯¯¯\__/¯¯¯\__
+Addr Bus:   <=======OLD======X======NEW_ADDR=======>
+R/W# Pin:   ¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯  (High for Read)
+Data Bus:   <=======ZZZZZZZ======X===VALID_DATA===> (ZZZ = High-Z/Invalid)
+
+Cycle:      |  T1  |  T2  |  T3  |  T4  |
+Action:     | Addr |      | Data |      |
+            | Valid| Wait | Valid| Done |
+
+Notes:
+- T1: CPU places address on bus, R/W# high (for read). Part of instruction decode/execute.
+- T2: Memory system processes request. For fast BRAM, this is short.
+- T3: Memory places data on bus, CPU latches data.
+- T4: Instruction execution completes internally.
+- This is a simplified view for fast BRAM. Slower memory (ROM, or contended VRAM)
+  would effectively extend T2 with wait states from the CPU's perspective, making the
+  instruction take longer than its base cycle count if not already factored in.
+  The cycle counts in Section 5 for ROM access already account for a typical ROM speed.
+
+**6.5. Typical Game Loop Structure**
+
+A typical game loop would leverage these synchronization mechanisms:
+1. Wait for VBLANK: Poll `VSYNC_STATUS_REG` Bit 1 (`NEW_FRAME`) to go high, or use the VBLANK NMI (Section 13).
+2. Input: Read controller states from `GAMEPAD_STATE_REG`s.
+3. Game Logic: Update game state, physics, AI, etc. This should be optimized to fit within one frame's CPU cycle budget.
+4. Graphics Updates: During VBLANK (check `IN_VBLANK` or within VBLANK NMI handler), update VRAM (tilemaps, bitmap sections), Sprite Attribute Table, palettes, and scrolling registers.
+5. Audio Updates: Update audio channel registers as needed. PCM updates might need more frequent, timer-driven servicing.
+6. Repeat.
 Game Loop
 1. Poll VSYNC_STATUS_REG for IN_VBLANK or NEW_FRAME.
 2. Read inputs from GAMEPAD_STATE_REG.
@@ -354,27 +498,119 @@ Reading Inputs
 
 8. Audio System
 
-Capabilities
-* Channels: 4 independent channels (square, sawtooth, triangle, noise).
-* PCM Playback: Channel 4 supports PCM via volume modulation (8 kHz recommended).
-* Envelope: Linear decay envelope per channel.
+The FC-8 audio system features 4 independent channels, each capable of generating square, sawtooth, triangle, or noise waveforms. Channel 4 also supports 4-bit PCM playback. Each channel has a programmable frequency, volume, and a hardware envelope generator. The primary clock for audio synthesis is the 1MHz `audio_clk` (see Section 19.1), unless specified otherwise.
 
-Channel Registers (per channel, e.g., Channel 1 at $020700-$020704)
-* CH1_FREQ_LO/HI_REG: 16-bit frequency (Hz = 1,000,000 / (value + 1)).
-* CH1_VOL_ENV_REG:
-  - Bits 7-4: Volume (0-15).
-  - Bit 3: Envelope Enable (1=on).
-  - Bits 2-0: Envelope Rate (0-7, 0=slowest, 7=fastest).
-* CH1_WAVE_DUTY_REG:
-  - Bits 7-6: Waveform (00=Square, 01=Saw, 10=Triangle, 11=Noise).
-  - Bits 5-4: Square Duty (00=12.5%, 01=25%, 10=50%, 11=75%).
-  - Bits 3-0: Reserved (write 0).
-* CH1_CTRL_REG:
-  - Bit 0: Trigger (1=start sound, auto-clears).
-  - Bit 7: Enable (1=on).
-  - Bits 1-6: Reserved (write 0).
-* Channels 2-4 ($020705-$020713): Identical structure.
+**8.1. Capabilities Overview**
 
+*   **Channels:** 4 independent digital audio channels.
+*   **Waveforms:** Square, Sawtooth, Triangle, Noise per channel.
+*   **PCM Playback:** Channel 4 supports raw PCM sample playback, effectively using its volume control as a 4-bit DAC.
+*   **Envelope:** Each channel has a linear decay envelope generator for its volume.
+*   **Output:** Mixed digital audio from the 4 channels is output as a Pulse Width Modulated (PWM) signal.
+
+**8.2. Channel Registers**
+
+Each channel `x` (1-4) has a set of registers. Example for Channel 1 (base $020700):
+*   **CHx_FREQ_LO/HI_REG ($020700/$020701 for CH1):**
+    *   A 16-bit value `FVAL = (CHx_FREQ_HI_REG << 8) | CHx_FREQ_LO_REG` determines the channel's fundamental frequency.
+    *   The output frequency for periodic waveforms (Square, Sawtooth, Triangle) is `OutputHz = AudioClockHz / (FVAL + 1)`, where `AudioClockHz` is 1,000,000 Hz.
+    *   The divisor `(FVAL + 1)` can range from 1 to 65536. This yields a frequency range from approximately 15.26 Hz (`1,000,000 / 65536`) up to 500,000 Hz (`1,000,000 / 2`, as FVAL=0 means divisor is 1, period is 1 audio_clk cycle, but a full wave needs at least 2 such cycles). A value of `FVAL = 0` (divisor 1) results in the highest frequency component being 1MHz; the fundamental waveform frequency would be 500kHz for symmetric waves.
+    *   Each channel's waveform generator uses this `FVAL` to control its internal phase accumulator.
+*   **CHx_VOL_ENV_REG ($020702 for CH1):**
+    *   Bits 7-4: `Volume` (0-15). Initial volume level for the channel, and current volume if Envelope Enable is 0.
+    *   Bit 3: `Envelope Enable` (0=Disabled, 1=Enabled). If enabled, the volume automatically decays.
+    *   Bits 2-0: `Envelope Rate` (0-7). Controls the speed of volume decay if Envelope Enable is 1.
+*   **CHx_WAVE_DUTY_REG ($020703 for CH1):**
+    *   Bits 7-6: `WaveformSelect` (00=Square, 01=Sawtooth, 10=Triangle, 11=Noise).
+    *   Bits 5-4: `SquareDuty` (For Square wave only: 00=12.5%, 01=25%, 10=50%, 11=75%). Ignored for other waveforms.
+    *   Bits 3-0: Reserved (write 0, read 0).
+*   **CHx_CTRL_REG ($020704 for CH1):**
+    *   Bit 0: `Trigger` (Write 1 to start sound/reset envelope; auto-clears to 0). When triggered, the channel's frequency counter, phase accumulator, envelope, and LFSR (if noise) are reset/restarted. The channel's current volume is immediately set to `Volume` from `CHx_VOL_ENV_REG`.
+    *   Bit 7: `Enable` (0=Channel Muted, 1=Channel Active). If 0, channel produces no sound.
+    *   Bits 1-6: Reserved (write 0, read 0).
+*   **Channels 2-4:** Identical register structure, offset by 5 bytes per channel:
+    *   Channel 2: $020705 - $020709
+    *   Channel 3: $02070A - $02070E
+    *   Channel 4: $02070F - $020713
+
+**8.3. Waveform Generation Details**
+The output of each waveform generator is an 8-bit unsigned value (0-255) which is then scaled by the channel's current volume.
+
+*   **Square Wave (WaveformSelect = 00):**
+    *   A phase accumulator (driven by `audio_clk`, period `P = FVAL + 1`) counts from 0 to `P-1`.
+    *   The output is `HighLevel` (e.g., 255) for a portion of the period and `LowLevel` (e.g., 0) for the remainder, determined by `SquareDuty`:
+        *   `00 (12.5%)`: High for `P/8` audio_clk cycles.
+        *   `01 (25%)`: High for `P/4` audio_clk cycles.
+        *   `10 (50%)`: High for `P/2` audio_clk cycles.
+        *   `11 (75%)`: High for `3P/4` audio_clk cycles.
+*   **Sawtooth Wave (WaveformSelect = 01):**
+    *   A phase accumulator, clocked by `audio_clk`, increments from 0 up to `P-1` (where `P = FVAL + 1`), then wraps to 0.
+    *   The output is directly proportional to the phase accumulator's value, scaled to an 8-bit range (0-255). This creates a rising sawtooth. `Output = (PhaseAccumulator * 255) / (P-1)`.
+*   **Triangle Wave (WaveformSelect = 10):**
+    *   A phase accumulator, clocked by `audio_clk`, increments from 0 up to `P-1` and then decrements back down to 0 over a period defined by `FVAL + 1`. The `OutputHz` formula gives the frequency of one full up/down triangle wave.
+    *   The output is proportional to the phase accumulator's value, scaled to an 8-bit range (0-255), forming a symmetrical triangle.
+*   **Noise (WaveformSelect = 11):**
+    *   Uses a 16-bit Linear Feedback Shift Register (LFSR). Upon reset (channel trigger or system reset), the LFSR is initialized to a non-zero value (e.g., $FFFF).
+    *   **Polynomial:** `x^16 + x^14 + x^13 + x^11 + 1`.
+    *   **Operation:** At each tick determined by the channel's frequency setting:
+        1.  The current value of LFSR bit 0 is used as the raw noise output (0 or 1).
+        2.  A new bit is calculated: `new_bit = LFSR[15] ^ LFSR[13] ^ LFSR[12] ^ LFSR[10]`.
+        3.  The LFSR is shifted right by 1 bit (e.g., `LFSR[i] = LFSR[i+1]` for `i` from 0 to 14).
+        4.  The new bit is inserted into LFSR bit 15: `LFSR[15] = new_bit`.
+    *   **Clocking:** The LFSR is clocked (generates a new output bit and shifts) at a rate of `audio_clk / (FVAL + 1)`.
+    *   **Output Scaling:** The raw noise output (0 or 1) from LFSR bit 0 is scaled to `LowLevel` (e.g., 0) or `HighLevel` (e.g., 255) to form the channel's waveform output.
+
+**8.4. PCM Playback (Channel 4 Only)**
+
+*   **Configuration:**
+    1.  On Channel 4, select any waveform type in `CH4_WAVE_DUTY_REG` (e.g., Square wave, code 00). This selection is typically ignored during PCM playback, but setting it to a known state is good practice.
+    2.  Ensure `CH4_VOL_ENV_REG` Bit 3 (Envelope Enable) is 0.
+*   **Operation:**
+    *   The CPU writes 4-bit unsigned PCM samples (0-15) into the upper nibble of `CH4_VOL_ENV_REG` (Bits 7-4).
+    *   **Mechanism:** When Channel 4 is active and configured for PCM (implicitly by writing samples when it's expected), the normal waveform generator for Channel 4 is bypassed. The 4-bit sample from `CH4_VOL_ENV_REG[7:4]` directly sets the channel's output amplitude. This 4-bit value (0-15) is scaled to the channel's full 8-bit output range (e.g., `SampleValue * 17` to map 0-15 to 0-255). This level is held until the CPU writes a new sample.
+*   **Sample Rate and Synchronization:**
+    *   Software is responsible for updating the `CH4_VOL_ENV_REG[7:4]` bits at the desired PCM sample rate (e.g., 8kHz). This is typically achieved using a timer interrupt (Section 13) or by precise cycle counting within the game loop.
+    *   The hardware latches the 4-bit sample upon CPU write. There is no internal hardware timer on Channel 4 for PCM rate control; the channel simply outputs the last written sample value.
+*   The `CH4_FREQ_LO/HI_REG` values are typically ignored during PCM playback on Channel 4.
+
+**8.5. Envelope Functionality**
+
+*   When `CHx_VOL_ENV_REG` Bit 3 (Envelope Enable) is 1, the channel's 4-bit volume (initially set by Bits 7-4 of `CHx_VOL_ENV_REG` upon a Trigger event) linearly decays.
+*   **Decay Process:** The 4-bit internal current volume (0-15) for the channel decrements by 1 at each "envelope step". Once it reaches 0, it remains 0 until the channel is re-triggered.
+*   **Decay Rate:** The time it takes for the volume to decay from 15 down to 0 is determined by `Envelope Rate` (Bits 2-0 of `CHx_VOL_ENV_REG`):
+    *   Rate 0: ~256 video frames (VSYNCs). Step occurs approx. every 17 frames (256/15).
+    *   Rate 1: ~128 video frames. Step occurs approx. every 8.5 frames.
+    *   Rate 2: ~64 video frames. Step occurs approx. every 4.2 frames.
+    *   Rate 3: ~32 video frames. Step occurs approx. every 2.1 frames.
+    *   Rate 4: ~24 video frames. Step occurs approx. every 1.6 frames.
+    *   Rate 5: ~16 video frames. Step occurs approx. every 1.06 frames (roughly 1 step per frame).
+    *   Rate 6: ~12 video frames. Step occurs approx. every 0.8 frames.
+    *   Rate 7: ~8 video frames. Step occurs approx. every 0.53 frames (roughly 2 steps per frame).
+    (Note: A "frame" corresponds to one VSYNC period, typically 1/60th of a second). The envelope generator requires a clock tick derived from the VSYNC pulse to manage these frame-based timings.
+*   **Triggering (`CHx_CTRL_REG` Bit 0):** When a channel is triggered:
+    1.  Its internal current volume is immediately set to the `Volume` specified in `CHx_VOL_ENV_REG` (Bits 7-4).
+    2.  The envelope decay process begins from this volume if Envelope Enable is 1.
+    3.  The channel's waveform generator (phase accumulator, LFSR) is reset.
+
+**8.6. Global Audio Control**
+
+*   **`AUDIO_MASTER_VOL_REG` ($0207F0):**
+    *   Bits 2-0: `MasterVolume` (0-7). This scales the final mixed output of all 4 channels.
+    *   A value of 0 should ideally mute the sound, while 7 is full volume.
+    *   Hardware implementation: The mixed 8-bit digital audio signal can be scaled by `(MasterVolume + 1) / 8`. For example, `ScaledOutput = (MixedDigitalSample * (MasterVolume + 1)) >> 3`.
+*   **`AUDIO_SYSTEM_CTRL_REG` ($0207F1):**
+    *   Bit 0: `AudioSystemEnable` (0=Mute all audio output, 1=Audio system active). This acts as a global mute.
+
+**8.7. Channel Mixing and Output**
+
+1.  **Per-Channel Amplitude:** Each active channel `x` generates an 8-bit unsigned digital audio value (`Channel_x_Out`, 0-255) based on its selected waveform generator. This value is then scaled by its current 4-bit volume `Vol_x` (0-15, after envelope application): `Scaled_Channel_x_Out = Channel_x_Out * (Vol_x / 15.0)`. For hardware, this is typically `(Channel_x_Out * Vol_x) >> 4`.
+2.  **Digital Mixing:** The scaled outputs of the 4 channels are digitally summed:
+    `SummedOutput = Scaled_Channel_1_Out + Scaled_Channel_2_Out + Scaled_Channel_3_Out + Scaled_Channel_4_Out`.
+    The sum is then typically averaged or clipped to bring it back to an 8-bit range. A common method is averaging: `MixedOutput_8bit = SummedOutput / 4` (i.e., right shift by 2 bits). The exact summing and scaling method should prevent excessive clipping while maintaining reasonable dynamic range.
+3.  **Master Volume Scaling:** The 8-bit `MixedOutput_8bit` is then scaled by `AUDIO_MASTER_VOL_REG` as described in Section 8.6. Let this be `FinalDigitalAudio_8bit`.
+4.  **PWM Output:** This `FinalDigitalAudio_8bit` stream is fed to a PWM modulator. The 8-bit value determines the duty cycle of a high-frequency carrier wave.
+    *   **PWM Carrier Frequency:** Recommended to be `MasterClock / 256` (e.g., 20MHz / 256 = ~78kHz) or at least `AudioClock / 256` (~3.9kHz, though this is low). A higher carrier frequency allows for simpler (lower-order) analog filtering.
+    *   The PWM output is a digital signal that, when passed through an appropriate external low-pass filter, reconstructs the analog audio waveform.
 Global Registers
 * $0207F0 - AUDIO_MASTER_VOL_REG (R/W):
   - Bits 2-0: Master Volume (0-7, 0=mute).
@@ -403,24 +639,160 @@ Noise Generator
 
 9. VRAM and Graphics System
 
-VRAM Overview
-* Size: 64 KiB ($010000-$01FFFF).
-* Access: Via bank switching (Pages 2-3, PAGE_SELECT_REG = 2 or 3).
-* Modes: Bitmap (256x256, 8-bit color) or Tilemap (32x30 tiles, 8x8 pixels).
+**9.1. VRAM Overview and Architecture**
 
-Bitmap Mode
-* Resolution: 256x256 pixels, each an 8-bit color index (references palette).
-* Memory Layout: Physical address = $010000 + (y * 256) + x.
-* Access: Set PAGE_SELECT_REG to 2 ($010000-$017FFF) or 3 ($018000-$01FFFF).
-* Writes: Allowed anytime, but non-VBLANK writes may cause visual artifacts.
+*   **Size and Physical Location:** VRAM is 64 KiB, located at physical addresses $010000-$01FFFF.
+*   **CPU Access:** Accessed by the CPU via bank switching, by setting `PAGE_SELECT_REG` to 2 (for physical $010000-$017FFF, often VRAM Page 0) or 3 (for physical $018000-$01FFFF, often VRAM Page 1), and then using logical addresses in the $8000-$FFFF range.
+*   **Hardware Implementation:** VRAM is typically implemented as on-chip BRAM in an FPGA. For this specification, assume VRAM is **single-ported** unless dual-port BRAM is explicitly mentioned as a performance optimization (see Section 19.2).
+*   **Graphics Modes:** VRAM data is interpreted differently based on the selected graphics mode (Bitmap or Tilemap), controlled by `SCREEN_CTRL_REG` (Bit 1).
 
-Tilemap Mode
-* Tilemap: 32x30 grid at $021800-$021B7F (Page 5).
-  - Each entry (2 bytes):
-    - Byte 0: Tile ID (0-255).
-    - Byte 1: Attributes (Bits 0-3: Palette index, Bit 4: Flip-X, Bit 5: Flip-Y, Bits 6-7: Reserved).
-* Tile Patterns: Stored in VRAM ($018000-$01FFFF), 256 bytes per 8x8 tile.
-* Rendering: Hardware maps tile IDs to patterns, applies attributes and palette.
+**9.1.1. CPU Access to VRAM**
+
+*   **Nominal Timing:** A CPU read from or write to VRAM is listed as 4 CPU cycles in Section 6 (Memory Access Timing). This is the baseline assuming VRAM is available to the CPU.
+    *   **Conceptual CPU Write Cycle (e.g., `STA $8100` with `PAGE_SELECT_REG` mapping to VRAM):**
+        1.  Cycle 1: CPU decodes instruction, calculates effective logical address (e.g., $8100), and translates to physical VRAM address.
+        2.  Cycle 2: CPU places physical VRAM address on address bus, data from a CPU register (e.g., A) on data bus, and asserts the Write Enable signal.
+        3.  Cycle 3: Data is written into the VRAM BRAM location.
+        4.  Cycle 4: Instruction completes.
+    *   **Conceptual CPU Read Cycle (e.g., `LDA $8100` with `PAGE_SELECT_REG` mapping to VRAM):**
+        1.  Cycle 1: CPU decodes instruction, calculates effective logical address and translates to physical VRAM address.
+        2.  Cycle 2: CPU places physical VRAM address on address bus and asserts the Read Enable signal.
+        3.  Cycle 3: Data from VRAM is available on the data bus and is latched by the CPU.
+        4.  Cycle 4: Instruction completes, data is now in the destination CPU register (e.g., A).
+
+**9.1.2. VRAM Access Contention (Single-Port VRAM)**
+
+*   **Cause of Contention:** With single-ported VRAM, both the CPU and the video display controller need to access VRAM. The video controller requires continuous read access during the active display period to fetch pixel data for screen rendering.
+*   **Visual Artifacts:** If the CPU writes to VRAM simultaneously with the video controller reading from it (i.e., outside of VBLANK), this contention can lead to visual artifacts such as "snow" (random pixels), tearing, or flickering. This occurs because the CPU write might interrupt a video read, providing the display logic with incorrect or transient data.
+*   **Prioritization and Wait States:** To prevent such artifacts, the video display controller must have priority access to VRAM during active display periods. If the CPU attempts to access VRAM during this time, the memory controller for VRAM should temporarily halt the CPU (introduce wait states), allowing the video controller to complete its read(s). Once the video controller's immediate need is satisfied (e.g., it has fetched data for a segment of the scanline), the CPU access can proceed.
+*   **VBLANK Access:** It is strongly recommended that CPU writes to VRAM occur only during the Vertical Blanking (VBLANK) interval (indicated by `VSYNC_STATUS_REG` Bit 0). During VBLANK, the video controller is not fetching active display pixels, so the CPU can access VRAM without contention. Reads from VRAM during active display might also be stalled but are less likely to cause persistent artifacts.
+*   **Dual-Port VRAM Note:** If dual-port BRAM is utilized (see Section 19.2), one port can serve the CPU (on `cpu_clk`) and the other the video controller (on `pixel_clk`), largely eliminating this contention.
+
+    **Conceptual VRAM Contention Timing (Single-Port VRAM):**
+
+    pixel_clk (Video):  __/¯¯¯\__/¯¯¯\__/¯¯¯\__/¯¯¯\__/¯¯¯\__/¯¯¯\__/¯¯¯\__/¯¯¯\__
+    Video VRAM Fetch:   <FETCH><FETCH><FETCH><FETCH><FETCH><FETCH><FETCH><FETCH>
+    (Continuous during active display)
+
+    cpu_clk:            ____/¯¯¯¯\____/¯¯¯¯\____/¯¯¯¯\____/¯¯¯¯\____/¯¯¯¯\____
+    CPU VRAM Request:   _____________/¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯\___
+    CPU VRAM Access:    ___________________________/¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯\_____
+    (Granted after delay or during HBLANK/VBLANK)
+    CPU Wait State:     ---------------------------<STALL>--------------------
+
+    Notes:
+    - Video controller fetches are time-critical and typically have priority.
+    - If CPU requests VRAM access (read or write) during active display:
+        - An arbiter detects the conflict.
+        - The CPU is made to wait (stalled, `cpu_clk` effectively gated for that operation or wait states inserted).
+        - Video fetch proceeds uninterrupted.
+        - CPU access is granted when VRAM is free (e.g., during HBLANK, or if video controller has a small internal buffer that frees up the bus momentarily).
+    - This illustrates why VRAM access is recommended during VBLANK.
+
+**9.2. Bitmap Mode**
+
+*   **Resolution:** 256x256 pixels, where each pixel is an 8-bit color index directly referencing one of the 256 colors in the global palette (Section 11).
+*   **Memory Layout:** Pixels are stored linearly. The physical VRAM address for a pixel at coordinate (x, y) is typically:
+    `PhysicalAddress = VRAM_Page_Base + (y * 256) + x`
+    Where `VRAM_Page_Base` is $010000 for Page 2 or $018000 for Page 3 if the bitmap spans both. Usually, the 256x256 bitmap would occupy a contiguous 64KiB block, mapping to physical $010000 - $01FFFF.
+*   **Display Logic Fetch:** During scanline generation, the video display logic reads VRAM byte-sequentially for each pixel to be displayed on that line, applying scrolling logic first to determine the starting (x,y) coordinate in the bitmap. For a scanline `CurrentScanline` on screen, and `CurrentPixelX` from 0 to 255:
+    `SourceX = (CurrentPixelX + VRAM_SCROLL_X_REG) % BitmapWidth` (BitmapWidth usually 256, or 512 if X-mirroring)
+    `SourceY = (CurrentScanline + VRAM_SCROLL_Y_REG + CoarseYOffset) % BitmapHeight` (BitmapHeight usually 256, or 512 if Y-mirroring)
+    The byte at `VRAM_Base + (SourceY * 256) + SourceX` is fetched. Each byte provides one pixel's 8-bit color index.
+*   **CPU Access:** The CPU can read/write pixel data by addressing the corresponding byte in VRAM (via paged window $8000-$FFFF, with `PAGE_SELECT_REG` = 2 or 3).
+
+**9.3. Tilemap Mode**
+
+*   **Tilemap Definition RAM:** The tilemap itself is a 32x30 grid of tile entries, stored in Page 5 SFR space at physical $021800-$021B7F. Each entry is 2 bytes:
+    *   Byte 0: `TileID` (0-255). This is an index to the tile pattern data.
+    *   Byte 1: `Attributes`
+        *   Bits 0-3: `AttributePaletteIndex` (0-15). Selects one of 16 sub-palettes.
+        *   Bit 4: `FlipX` (0=normal, 1=horizontal flip).
+        *   Bit 5: `FlipY` (0=normal, 1=vertical flip).
+        *   Bits 6-7: Reserved (read 0, write 0).
+*   **Tile Pattern VRAM:** Tile patterns (the pixel data for each tile) are stored in VRAM, typically starting at physical $018000 (VRAM Page 3).
+    *   **Pattern Format Clarification:** Each 8x8 tile pattern consists of 64 pixels. Each pixel's color is determined by a 4-bit index (0-15). This 4-bit index is combined with the `AttributePaletteIndex` (also 4-bit) to form the final 8-bit index into the global 256-color palette.
+    *   `FinalColorIndex = (AttributePaletteIndex << 4) | (PixelPatternData & 0x0F)`
+    *   **Storage in VRAM:** While each pixel needs 4 bits, VRAM is byte-addressable. This specification assumes that each byte in the tile pattern area of VRAM stores the 4-bit data for **one pixel** (e.g., in its low nibble, with the high nibble ignored). Thus, each 8x8 tile pattern occupies 64 bytes in VRAM.
+    *   `TilePatternBaseAddr = VRAM_TilePattern_Base (e.g., $018000) + (TileID * 64_bytes_per_tile)`
+*   **Tilemap Rendering Data Flow (per on-screen pixel):**
+    1.  **Calculate Scrolled Coordinates:** For the current on-screen pixel (ScreenPixelX, ScreenPixelY), calculate its effective coordinate in the full tilemap space using `VRAM_SCROLL_X/Y_REG` and coarse offsets from `VRAM_FLAGS_REG`.
+        `EffectiveX = ScreenPixelX + VRAM_SCROLL_X_REG`
+        `EffectiveY = ScreenPixelY + VRAM_SCROLL_Y_REG + (VRAM_FLAGS_REG.CoarseYOffset * 16)`
+    2.  **Determine Tilemap Coordinates:**
+        `TileMapColumn = (EffectiveX / 8)` (integer division)
+        `TileMapRow = (EffectiveY / 8)` (integer division)
+        Apply mirroring from `VRAM_FLAGS_REG` if coordinates exceed map dimensions (e.g., `TileMapColumn = TileMapColumn % 32` if not mirrored, or `TileMapColumn = TileMapColumn % 64` then fold back if mirrored width is 64).
+    3.  **Fetch Tile Entry:** Read the 2-byte entry (`TileID`, `Attributes`) from Tilemap Definition RAM:
+        `EntryAddr = TilemapBaseAddr ($021800) + (TileMapRow * TilemapWidthInBytes + TileMapColumn * 2)`
+        This data is typically fetched once per 8x8 tile region and can be cached by the rendering hardware for the duration of that tile's scanlines.
+    4.  **Determine Pixel within Tile:**
+        `PixelX_in_Tile = EffectiveX % 8`
+        `PixelY_in_Tile = EffectiveY % 8`
+    5.  **Apply Flipping to Intra-Tile Coordinates:**
+        If `Attributes.FlipX` is set: `PixelX_in_Tile = 7 - PixelX_in_Tile`.
+        If `Attributes.FlipY` is set: `PixelY_in_Tile = 7 - PixelY_in_Tile`.
+    6.  **Fetch Tile Pixel Pattern Byte:** Read 1 byte from VRAM Tile Patterns:
+        `PatternVRAMAddr = VRAM_TilePattern_Base + (TileID * 64) + (PixelY_in_Tile * 8) + PixelX_in_Tile`
+        The fetched byte contains the 4-bit index for the pixel (e.g., in bits 3-0). Let this be `PixelPatternData_4bit = FetchedByte & 0x0F`.
+    7.  **Form Final Color Index:**
+        `FinalColorIndex = (Attributes.AttributePaletteIndex << 4) | PixelPatternData_4bit`. This 8-bit value is used to look up the R3G3B2 color from the global palette (Section 11).
+*   **Hardware Attribute Application:**
+    *   Flipping modifies the read coordinates within the 8x8 tile pattern.
+    *   `AttributePaletteIndex` directly forms the upper nibble of the final palette index.
+*   **Rendering Performance:** Tilemap rendering is more complex than bitmap mode. Hardware typically uses line buffers for tile entries of the current row of tiles and caches for recently used tile patterns to achieve real-time performance (1 pixel output per `pixel_clk` cycle after initial fill). Initial fetches for a new row of tiles will incur latencies accessing Tilemap Definition RAM (SFRs) and VRAM tile patterns.
+
+**9.4. Scrolling Implementation**
+
+*   **Registers Involved:**
+    *   `VRAM_SCROLL_X_REG` ($020101): Fine horizontal scroll value (0-255 pixels).
+    *   `VRAM_SCROLL_Y_REG` ($020102): Fine vertical scroll value (0-255 pixels).
+    *   `VRAM_FLAGS_REG` ($020100):
+        *   Bit 0: `MirrorX` - Repeats/tiles the VRAM content horizontally.
+        *   Bit 1: `MirrorY` - Repeats/tiles the VRAM content vertically.
+        *   Bit 2: `FlipScreenX` - Inverts the entire screen display horizontally (post-scrolling).
+        *   Bit 3: `FlipScreenY` - Inverts the entire screen display vertically (post-scrolling).
+        *   Bits 4-7: `CoarseYOffset` - Signed value (-8 to +7), multiplied by 16 lines, added to Y scroll.
+*   **Address Calculation Hardware Logic (Conceptual):**
+    For each screen pixel at `(ScreenX, ScreenY)`:
+    1.  `CoarseScrollY = SIGN_EXTEND(VRAM_FLAGS_REG.CoarseYOffset[3:0]) * 16`
+    2.  `EffectiveSourceX = VRAM_SCROLL_X_REG + ScreenX`
+    3.  `EffectiveSourceY = VRAM_SCROLL_Y_REG + ScreenY + CoarseScrollY`
+    4.  **Bitmap Mode Addressing:**
+        *   `MapWidth = VRAM_FLAGS_REG.MirrorX ? 512 : 256`
+        *   `MapHeight = VRAM_FLAGS_REG.MirrorY ? 512 : 256`
+        *   `FinalSourceX_bitmap = EffectiveSourceX % MapWidth`
+        *   `FinalSourceY_bitmap = EffectiveSourceY % MapHeight`
+        *   `VRAM_ReadAddr = VRAM_BitmapBase + (FinalSourceY_bitmap * 256) + FinalSourceX_bitmap` (assuming VRAM bitmap width is always 256 for addressing, mirroring handles apparent size)
+    5.  **Tilemap Mode Addressing:** (Described in Section 9.3) `EffectiveSourceX` and `EffectiveSourceY` are used to determine `TileMapColumn`, `TileMapRow`, `PixelX_in_Tile`, `PixelY_in_Tile`. Mirroring applies to `TileMapColumn` and `TileMapRow` against the tilemap dimensions.
+    6.  **Screen Flipping (`FlipScreenX`, `FlipScreenY`):** If enabled, these are typically applied last, either by modifying the order screen pixels are output or by adjusting the initial `ScreenX`, `ScreenY` read by the display generator (e.g., if `FlipScreenX` is set, `ScreenX` effectively counts down from 255 to 0 for fetching purposes).
+
+**9.5. Screen Bounding Bottom Effect**
+
+*   **Mechanism:** This effect allows per-column vertical displacement of the bottom part of the screen, often used for wavy water or horizon effects. The 256 bytes from $020000-$0200FF (Page 4, SFRs) define a vertical offset `Offset[X]` for each screen column `X` (0-255).
+*   **Hardware Implementation:**
+    *   As the video controller renders each scanline `CurrentScanline` and each pixel column `CurrentScreenX`:
+    *   It reads `Offset[CurrentScreenX]` from the SFR region $020000 + CurrentScreenX.
+    *   This `Offset[CurrentScreenX]` value (0-255) determines how much the *source* Y coordinate for VRAM reads is modified for that column, specifically when `CurrentScanline` is near the bottom of the display.
+    *   **Conceptual Logic:**
+        `EffectiveScanlineY = CurrentScanline`
+        `If (CurrentScanline >= (ScreenHeight - DisplacementRegionHeight))`: // e.g., DisplacementRegionHeight could be 64 lines
+            `VerticalShift = Offset[CurrentScreenX]` // Or a fraction/scaled version of it
+            `EffectiveScanlineY = CurrentScanline - VerticalShift` // Pixels are fetched from 'higher up' in VRAM, making them appear shifted down.
+    *   The exact interpretation of `Offset[X]` (e.g., direct shift, amplitude of a wave) and the region it affects can vary, but it essentially modifies the `SourceY` used for VRAM lookups for pixels in that column, typically towards the bottom of the visible screen area. This modification is applied *before* the VRAM read for that pixel.
+
+**9.6. Graphics Mode Selection**
+
+*   **Control Register:** `SCREEN_CTRL_REG` ($020800), Bit 1 (`Mode`).
+    *   `Mode = 0`: Bitmap Mode selected.
+    *   `Mode = 1`: Tilemap Mode selected.
+*   **Hardware Switching:** This bit acts as a primary multiplexer select for several parts of the video generation pipeline:
+    1.  **VRAM Address Generation:** Selects between bitmap addressing logic (Section 9.2) and tilemap addressing logic (Section 9.3 for fetching tile patterns from VRAM).
+    2.  **Data Source for Pixels:**
+        *   Bitmap Mode: Pixel data (8-bit color index) comes directly from VRAM based on scrolled bitmap coordinates.
+        *   Tilemap Mode: Pixel data (4-bit index) comes from VRAM tile patterns, which is then combined with `AttributePaletteIndex` from Tilemap Definition RAM.
+    3.  **Tilemap Definition RAM Access:** Enabled only in Tilemap Mode for fetching `TileID` and `Attributes`.
+*   The switch effectively reconfigures the data path from memory to the palette lookup stage. This change should ideally occur only during VBLANK to prevent visual corruption during a frame.
 
 Scrolling
 * $020101 - VRAM_SCROLL_X_REG (R/W): 8-bit fine horizontal scroll (0-255 pixels).
@@ -431,7 +803,6 @@ Scrolling
   - Bit 2: Flip-X (inverts horizontally).
   - Bit 3: Flip-Y (inverts vertically).
   - Bits 4-7: Coarse Y Offset (-8 to +7, multiplied by 16 lines).
-  - Bits 8-15: Reserved (write 0).
 
 Screen Bounding Bottom Effect
 * $020000-$0200FF (Page 4): 256 bytes, one per column, vertical offset (0-255 pixels) for bottom boundary effect.
@@ -445,26 +816,103 @@ Graphics Mode Selection
 
 10. Sprite System
 
-Sprite Definition
-* Size: 16x16 pixels, 8-bit color index per pixel.
-* Transparency: Color index $00 is transparent.
-* Storage: Cartridge ROM ($030000-$0FFFFF), 256 bytes per sprite.
+**10.1. Sprite Definition**
 
-Sprite Attribute Table
-* $020200-$0205FF (Page 4): 256 entries, 4 bytes each:
-  - Byte 0: Sprite ID (0-255, $FF=disabled).
-  - Byte 1: X-Position (0-255, 0=left edge).
-  - Byte 2: Y-Position (0-255, 0=top edge).
-  - Byte 3: Attributes:
-    - Bit 0: Flip-X (horizontal flip).
-    - Bit 1: Flip-Y (vertical flip).
-    - Bit 2: Priority (0=behind VRAM, 1=in front).
-    - Bits 3-7: Reserved (write 0).
+*   **Size:** Each sprite is a 16x16 pixel graphical object.
+*   **Color Depth:** Each pixel within a sprite is defined by an 8-bit color index, which directly references one of the 256 colors in the global palette (Section 11).
+*   **Transparency:** For any sprite pixel, a color index of $00 signifies transparency. This pixel will not be drawn, allowing the background (VRAM, other sprites) to show through.
+*   **Storage:** Sprite patterns (pixel data) are stored in Cartridge ROM (physical address range $030000-$0FFFFF).
+*   **Pattern Data Size:** Each 16x16 sprite pattern, with 8 bits per pixel, occupies `16 rows * 16 pixels/row * 1 byte/pixel = 256 bytes` in ROM.
 
-Rendering
-* Limits: Up to 64 sprites on-screen, 8 per scanline (lower Sprite IDs prioritized).
-* Priority: Normal (Bit 2=0) renders behind non-transparent VRAM pixels; High (Bit 2=1) renders in front.
-* Clipping: Sprites outside 256x240/256x256 screen are not rendered.
+**10.2. Sprite Attribute Table (SAT)**
+
+*   **Location and Size:** The SAT is located in SFR space (Page 4) at physical addresses $020200-$0205FF. It can hold up to 256 entries. Each entry is 4 bytes long.
+*   **CPU Access:** The CPU accesses the SAT via the paged memory window by setting `PAGE_SELECT_REG = 4` and then using logical addresses $8200-$85FF (since $020200 physical is $8200 logical within page 4).
+    *   Access timing is per standard SFR access (e.g., a `STA abs` to an SAT entry byte takes 4 CPU cycles). No additional wait states specific to SAT apply beyond normal SFR access.
+*   **Entry Format (4 bytes per sprite):**
+    *   **Byte 0: Sprite ID (0-255):** Identifies the sprite pattern in Cartridge ROM. A Sprite ID of $FF disables this SAT entry (sprite is not processed or drawn).
+    *   **Byte 1: X-Position (0-255):** Horizontal screen coordinate of the sprite's left edge. An X-position of 0 places the leftmost pixel of the sprite in the first visible column of the screen.
+    *   **Byte 2: Y-Position (0-255):** Vertical screen coordinate of the sprite's top edge. A Y-position of 0 places the topmost pixel of the sprite on the first visible scanline.
+    *   **Byte 3: Attributes:**
+        *   Bit 0: `FlipX` (0=Normal, 1=Horizontally Flipped).
+        *   Bit 1: `FlipY` (0=Normal, 1=Vertically Flipped).
+        *   Bit 2: `Priority` (0=Behind VRAM, 1=In Front of VRAM). Controls layering with the VRAM background.
+        *   Bits 3-7: Reserved (hardware should ignore writes, reads return 0).
+
+**10.3. Sprite Rendering Pipeline (Hardware Details)**
+
+The sprite rendering process is managed by dedicated hardware and occurs concurrently with VRAM background rendering for each scanline.
+
+1.  **Scanline Sprite Evaluation (Pre-Scanline or Early Scanline Phase):**
+    *   For each visible scanline (`CurrentScanline` from 0 to 239/255):
+        *   The hardware iterates through the SAT from entry 0 up to a defined limit (e.g., the first 64 or all 256 entries if time permits, though only up to 64 can be *displayed*).
+        *   For each SAT entry:
+            *   If `SAT_Entry.SpriteID == $FF`, the entry is skipped.
+            *   `SpriteY = SAT_Entry.Y_Position`
+            *   If `CurrentScanline >= SpriteY` AND `CurrentScanline < (SpriteY + 16)`: This sprite is "active" on the current scanline.
+        *   The hardware collects a list of these active sprites, up to a maximum of **8 sprites per scanline**.
+        *   **Per-Scanline Limit Enforcement:** If more than 8 sprites are active on a given scanline, only the first 8 encountered (those with the lowest SAT indices) are processed for display on that line. Others are ignored for this scanline.
+        *   **Total Sprite Limit:** The system aims to display up to **64 sprites total on screen** per frame. This limit might be enforced by processing only the first N SAT entries that are not disabled, or by a counter during the frame. If more than 64 unique sprites are marked active across all scanlines, behavior might be that lower-indexed sprites in SAT get preference.
+
+2.  **Sprite Data Fetching and Buffering (Typically during HBLANK or start of Scanline):**
+    *   For each of the (up to) 8 sprites selected for the current scanline:
+        *   `SpriteID = Selected_SAT_Entry.SpriteID`
+        *   `SpritePatternRow = CurrentScanline - Selected_SAT_Entry.Y_Position` (This value is 0-15).
+        *   If `Selected_SAT_Entry.Attributes.FlipY` is true, then `SpritePatternRow = 15 - SpritePatternRow`.
+        *   The base physical address for this sprite's 256-byte pattern in Cartridge ROM is calculated:
+            `SpritePatternBaseAddr = CartridgeROM_PhysicalBase + (SpriteID * 256)`
+        *   The address for the specific row's 16 pixels (16 bytes) is:
+            `RowDataAddress = SpritePatternBaseAddr + (SpritePatternRow * 16)`
+        *   The hardware fetches these 16 bytes from Cartridge ROM.
+    *   **Buffering Strategy:** Since Cartridge ROM access can be relatively slow (Section 6 specifies 4 CPU cycles per byte), it's crucial for performance that this data is pre-fetched. Each of the up to 8 active sprites per scanline requires 16 bytes of pixel data for that line. This data (8 sprites * 16 bytes/sprite = 128 bytes) is read from ROM and stored in on-chip line buffers before the active display portion of the scanline begins (e.g., during Horizontal Blanking).
+
+3.  **Pixel Generation and Mixing (Per Pixel Clock during Active Scanline Display):**
+    *   For each horizontal pixel position on the screen (`CurrentScreenX` from 0 to 255):
+        *   The hardware determines the VRAM background pixel color index (from Bitmap or Tilemap mode).
+        *   It then evaluates each of the (up to) 8 active, buffered sprites for the current scanline:
+            *   `SpriteX_Screen = Selected_SAT_Entry.X_Position`
+            *   If `CurrentScreenX >= SpriteX_Screen` AND `CurrentScreenX < (SpriteX_Screen + 16)`:
+                *   The current screen pixel falls within this sprite's horizontal span.
+                *   `SpritePixelColumn = CurrentScreenX - SpriteX_Screen` (This value is 0-15).
+                *   If `Selected_SAT_Entry.Attributes.FlipX` is true, then `SpritePixelColumn = 15 - SpritePixelColumn`.
+                *   The sprite's 8-bit color index for this pixel is retrieved from the corresponding on-chip line buffer: `SpriteColorIndex = SpriteLineBuffer[ActiveSpriteIndex][SpritePixelColumn]`.
+                *   **Transparency Check:** If `SpriteColorIndex == $00`, this specific sprite pixel is transparent and does not contend for display at this `CurrentScreenX`.
+                *   **Pixel Mixing Logic:** The final pixel color index sent to the palette is determined by a defined layering order. Hardware evaluates each layer. Sprites with lower SAT indices have priority over those with higher SAT indices within the same priority group.
+                    Let `VRAM_PixelColor` be the color index from the VRAM background (Bitmap or Tilemap).
+                    Let `CurrentDisplayPixel` = `VRAM_PixelColor`.
+
+                    // 1. Normal Priority Sprites (SAT Entry Attribute Bit 2: Priority == 0)
+                    // These sprites are only visible if the VRAM pixel at their location is transparent ($00),
+                    // effectively placing them "behind" opaque VRAM content.
+                    // Iterate from lowest SAT index to highest for qualifying normal priority sprites.
+                    For each active Normal Priority Sprite that covers `CurrentScreenX`:
+                        If its `SpriteColorIndex` is not transparent ($00):
+                            // Check if the original VRAM pixel (which CurrentDisplayPixel holds at this stage) is transparent.
+                            If `VRAM_PixelColor` is transparent ($00):
+                                `CurrentDisplayPixel` = `SpriteColorIndex`.
+
+                    // 2. Text Layer (if enabled and TEXT_CTRL_REG.Priority == 0)
+                    // Assumes GetTextLayerPixelColor() returns a color index or a specific transparent marker.
+                    // A transparent text background (attribute bits 4-7 = $00) should yield transparency here.
+                    If `TEXT_CTRL_REG.Enable == 1` AND `TEXT_CTRL_REG.Priority == 0`:
+                        `TextPixelColor` = GetTextLayerPixelColor(`CurrentScreenX`, `CurrentScanline`);
+                        If `TextPixelColor` is not transparent:
+                            `CurrentDisplayPixel` = `TextPixelColor`.
+
+                    // 3. High Priority Sprites (Priority == 1)
+                    // Iterate from lowest SAT index to highest for qualifying high priority sprites.
+                    For each active High Priority Sprite that covers `CurrentScreenX`:
+                        If its `SpriteColorIndex` is not transparent ($00):
+                            `CurrentDisplayPixel` = `SpriteColorIndex`.
+
+                    // 4. Text Layer (if enabled and High Priority)
+                    If `TEXT_CTRL_REG.Enable == 1` AND `TEXT_CTRL_REG.Priority == 1`:
+                        `TextPixelColor` = GetTextLayerPixelColor(`CurrentScreenX`, `CurrentScanline`); // Re-evaluate or use prior result
+                        If `TextPixelColor` is not transparent:
+                            `CurrentDisplayPixel` = `TextPixelColor`.
+                    
+                    The `CurrentDisplayPixel` is the final 8-bit color index for `CurrentScreenX`.
+*   **Clipping:** Sprites are clipped at the screen edges. If a sprite's X/Y position calculated from SAT would place it partially or fully off-screen (e.g., X < 0 or X + 15 > 255), only the portions that fall within the visible screen coordinates (typically 0-255 horizontally, 0-239 vertically) are rendered. The hardware achieves this by only processing and outputting pixels that fall within the active display area.
 
 ------------------------------------------------------------
 
@@ -519,41 +967,74 @@ Rendering
 
 13. Interrupt Handling
 
-Interrupt Sources
-* VBLANK: Triggered at start of VBLANK (every frame, 60Hz).
-* Timer: Programmable via TIMER_CTRL_REG.
-* External: Gamepad button press/release edge detection.
+The FC-8 supports three interrupt sources: VBLANK (Non-Maskable Interrupt), a programmable Timer (IRQ), and an External event (IRQ) typically for gamepad input changes. Interrupt control registers (Enable, Status, Timer Control) are located in SFR Page 4.
 
-Interrupt Registers
-* $020870 - INT_ENABLE_REG (R/W, Page 4):
-  - Bit 0: VBLANK enable (1=on).
-  - Bit 1: Timer enable (1=on).
-  - Bit 2: External enable (1=on).
-  - Bits 3-7: Reserved (write 0).
-* $020871 - INT_STATUS_REG (Read-clear, Page 4):
-  - Bit 0: VBLANK pending (1=active).
-  - Bit 1: Timer pending (1=active).
-  - Bit 2: External pending (1=active).
-  - Bits 3-7: Reserved (read 0).
-* $020860 - TIMER_CTRL_REG (R/W, Page 4):
-  - Bits 0-3: Prescaler (0-15, divides 5MHz clock).
-  - Bit 4: Enable (1=timer running).
-  - Bits 5-7: Reserved (write 0).
+**13.1. Interrupt Sources and Flags**
 
-Interrupt Vectors
-* $FFFC-$FFFD: Reset vector (16-bit logical address).
-* $FFFA-$FFFB: Non-Maskable Interrupt (NMI, VBLANK).
-* $FFF8-$FFF9: Interrupt Request (IRQ, Timer/External).
+*   **VBLANK (NMI - Non-Maskable Interrupt):**
+    *   This interrupt has the highest priority and cannot be masked by the CPU's I (Interrupt Disable) flag.
+    *   The NMI signal is asserted to the CPU when the `NEW_FRAME` flag in `VSYNC_STATUS_REG` ($020850, Bit 1) is set by hardware. This occurs at the beginning of the VBLANK period (e.g., start of scanline 240 in 256x240 mode, or scanline 256 in 256x256 mode), as detailed in Section 6.2.
+    *   The VBLANK interrupt pending bit (Bit 0) in `INT_STATUS_REG` is also set at this time.
+*   **Timer (IRQ - Interrupt Request):**
+    *   This is a maskable interrupt. Its assertion is dependent on its enable bit in `INT_ENABLE_REG` and the CPU's I flag.
+    *   **Configuration (`TIMER_CTRL_REG` - $020860):**
+        *   Bits 0-3: `PrescalerSelect`. This value selects a divisor for the 5MHz `cpu_clk`. The prescaled clock frequency is `TimerClock = cpu_clk / (2^PrescalerSelect)`.
+            *   Example: `PrescalerSelect = 0` => `TimerClock = 5MHz / 1 = 5MHz`.
+            *   Example: `PrescalerSelect = 15` => `TimerClock = 5MHz / 32768 = ~152.59 Hz`.
+        *   Bit 4: `Enable`.
+            *   Setting to 1: Enables the timer and resets its internal 8-bit up-counter to $00. The counter then begins to increment at each `TimerClock` tick.
+            *   Setting to 0: Disables the timer, halting its counter. If re-enabled, the counter always restarts from $00.
+        *   Bits 5-7: Reserved (write 0, read 0).
+    *   **IRQ Assertion:** The timer uses an internal 8-bit up-counter. This counter is clocked by the `TimerClock`. When this 8-bit counter overflows (transitions from $FF to $00), the Timer IRQ is generated. If this interrupt is enabled in `INT_ENABLE_REG` (Bit 1), the Timer pending bit (Bit 1) in `INT_STATUS_REG` is set to 1. The counter continues counting from $00 after an overflow.
+*   **External (IRQ - Gamepad Input):**
+    *   This is a maskable interrupt, typically used for signaling gamepad input changes.
+    *   **Source:** Triggered by a detected edge (button press or release) on any button of either connected gamepad, after hardware debouncing (see Section 7).
+    *   **Mechanism:** The input system hardware generates a single pulse when such an edge is detected. This pulse asserts the CPU's External IRQ line (if enabled via `INT_ENABLE_REG` Bit 2), which in turn sets the External pending bit (Bit 2) in `INT_STATUS_REG`.
+    *   **Identification by Software:** The hardware interrupt itself does not specify which button or gamepad caused the event. The ISR must read `GAMEPAD1_STATE_REG` ($020600) and `GAMEPAD2_STATE_REG` ($020601) and compare their states with previously stored values to determine the source(s) of the input change.
 
-Interrupt Behavior
-* When triggered (and I=0 in Flag Register):
-  1. Push PC (high byte, low byte) to stack.
-  2. Push Flag Register to stack.
-  3. Set I flag (disable interrupts).
-  4. Jump to vector (NMI or IRQ).
-* RTI instruction restores PC and flags from stack.
-* Priority: VBLANK (NMI) > Timer > External.
-* HLT instruction: CPU halts until interrupt (if I=0) or reset.
+**13.2. Interrupt Control Registers (SFR Page 4)**
+
+*   **$020870 - INT_ENABLE_REG (R/W):**
+    *   Bit 0: `VBLANK Enable` (1=Enabled). While VBLANK is an NMI, this bit primarily controls whether the VBLANK event sets its corresponding status flag in `INT_STATUS_REG`. The NMI signal to the CPU is always asserted on `NEW_FRAME`.
+    *   Bit 1: `Timer Enable` (1=Enabled, 0=Disabled). Controls if the Timer IRQ is passed to the interrupt controller.
+    *   Bit 2: `External Enable` (1=Enabled, 0=Disabled). Controls if the External IRQ is passed to the interrupt controller.
+    *   Bits 3-7: Reserved (write 0, read 0).
+*   **$020871 - INT_STATUS_REG (R/W - special write behavior):**
+    *   Bit 0: `VBLANK Pending` (1=Active). Set by hardware when `NEW_FRAME` occurs (if VBLANK Enable in `INT_ENABLE_REG` is 1).
+    *   Bit 1: `Timer Pending` (1=Active). Set by hardware when the timer counter overflows (if Timer Enable in `INT_ENABLE_REG` is 1).
+    *   Bit 2: `External Pending` (1=Active). Set by hardware upon gamepad edge detection (if External Enable in `INT_ENABLE_REG` is 1).
+    *   Bits 3-7: Reserved (reads return 0, writes have no effect).
+    *   **Clearing Pending Bits:** Bits in this register are set by hardware. To clear a pending interrupt flag, software must write a '1' to the corresponding bit position(s). Writing a '0' to a bit has no effect. This allows selective acknowledgement of interrupt sources. For example, writing `$02` to this register clears only the Timer Pending flag.
+
+**13.3. Interrupt Vectors**
+
+These are fixed locations in the CPU's logical address space where it fetches the starting address of the ISR.
+*   `$FFFC-$FFFD`: Reset vector (Low byte at $FFFC, High byte at $FFFD).
+*   `$FFFA-$FFFB`: Non-Maskable Interrupt (NMI) vector (e.g., for VBLANK).
+*   `$FFF8-$FFF9`: Interrupt Request (IRQ) vector (e.g., for Timer, External).
+
+**13.4. CPU Interrupt Behavior**
+
+*   **Interrupt Recognition:** Interrupts (NMI and IRQ) are typically checked by the CPU before fetching the next instruction.
+*   **Sequence of Operations (when an interrupt is taken):**
+    1.  The currently executing instruction is completed.
+    2.  The Program Counter (PC) is pushed onto the stack consistent with SP behavior (points to next free, increments after store): `MEM[SP] = PCH` (high byte), `SP++`; then `MEM[SP] = PCL` (low byte), `SP++`.
+    3.  The Flag Register (F) is pushed onto the stack: `MEM[SP] = F`, `SP++`.
+    4.  **For IRQs:** The I (Interrupt Disable) flag in the F register is automatically set to 1 by hardware to prevent further IRQs.
+    5.  **For NMIs:** The I flag is also set. While the I flag doesn't mask subsequent NMIs at the CPU input, the CPU will typically only service another NMI after the current one has concluded with an RTI or other specific conditions.
+    6.  The PC is loaded with the 16-bit address from the corresponding interrupt vector:
+        *   NMI: `PCL = MEM[$FFFA]`, `PCH = MEM[$FFFB]`.
+        *   IRQ: `PCL = MEM[$FFF8]`, `PCH = MEM[$FFF9]`.
+    *   **Timing:** This entire interrupt processing sequence (steps 2-6) takes 7 CPU cycles from the completion of the last user instruction to the fetch of the first instruction of the ISR. This is the same cycle count as the `BRK` instruction.
+*   **RTI (Return from Interrupt) Instruction:** Restores the Flag Register (F) and Program Counter (PC) from the stack. If the restored F has the I flag clear, IRQs are re-enabled.
+*   **Priority:**
+    *   NMI (VBLANK) has the highest priority and will interrupt IRQ handlers if it occurs during one (though the NMI vector fetching will only happen after the current instruction in the IRQ handler completes).
+    *   Timer and External IRQs share a single IRQ line to the CPU. If both are pending in `INT_STATUS_REG` and enabled, the CPU receives a single IRQ signal. The ISR must then read `INT_STATUS_REG` to determine which source(s) require service. Software can implement further priority by checking the status bits in a specific order.
+*   **HLT Instruction Interaction:**
+    *   If the CPU is in a HLT state:
+        *   An NMI will always cause the CPU to wake up, execute the NMI ISR sequence (7 cycles), and then the ISR code.
+        *   An IRQ (Timer or External) will wake the CPU only if the I flag in the F register is currently 0. If I=1, the CPU remains halted, and the IRQ remains pending.
+    *   Upon completion of any ISR (via RTI) that was entered from a HLT state, execution resumes with the instruction *immediately following* the HLT instruction.
 
 Example
 * VBLANK interrupt: Enable via INT_ENABLE_REG Bit 0=1, ISR at $FFFA-$FFFB updates VRAM.
@@ -578,35 +1059,56 @@ Example
 
 15. List of Special Registers
 
-Address			Name				Description				Access
-$00FE			PAGE_SELECT_REG		Page Select (bits 0-4)			R/W, Page 0
-$020000-$0200FF		Screen Bounding Offsets	Per-column vertical offset		R/W, Page 4
-$020100			VRAM_FLAGS_REG		VRAM mirror/flip/coarse scroll		R/W, Page 4
-$020101			VRAM_SCROLL_X_REG	Fine horizontal scroll			R/W, Page 4
-$020102			VRAM_SCROLL_Y_REG	Fine vertical scroll			R/W, Page 4
-$020200-$0205FF		Sprite Attribute Table	Sprite entries (256 * 4 bytes)		R/W, Page 4
-$020600			GAMEPAD1_STATE_REG	Gamepad 1 buttons			Read-only, Page 4
-$020601			GAMEPAD2_STATE_REG	Gamepad 2 buttons			Read-only, Page 4
-$020602			INPUT_STATUS_REG	Controller connection status		Read-only, Page 4
-$020700-$020704		CH1 Audio Registers	Freq, Vol, Wave, Ctrl (Channel 1)	R/W, Page 4
-$020705-$020709		CH2 Audio Registers	Freq, Vol, Wave, Ctrl (Channel 2)	R/W, Page 4
-$02070A-$02070E		CH3 Audio Registers	Freq, Vol, Wave, Ctrl (Channel 3)	R/W, Page 4
-$02070F-$020713		CH4 Audio Registers	Freq, Vol, Wave, Ctrl (Channel 4)	R/W, Page 4
-$0207F0			AUDIO_MASTER_VOL_REG	Master audio volume			R/W, Page 4
-$0207F1			AUDIO_SYSTEM_CTRL_REG	Audio system enable			R/W, Page 4
-$020800			SCREEN_CTRL_REG		Display enable/mode			R/W, Page 4
-$020810			PALETTE_ADDR_REG	Palette index (auto-increment)		Write-only, Page 4
-$020811			PALETTE_DATA_REG	Palette color (R3G3B2)			Write-only, Page 4
-$020820			FRAME_COUNT_LO_REG	Frame counter low byte			Read-only, Page 4
-$020821			FRAME_COUNT_HI_REG	Frame counter high byte			Read-only, Page 4
-$020830			RAND_NUM_REG		Pseudo-random number			R/W, Page 4
-$020840			TEXT_CTRL_REG		Text layer enable/attributes		R/W, Page 4
-$020850			VSYNC_STATUS_REG	VSync status (VBLANK, new frame)	Read-only, Page 4
-$020860			TIMER_CTRL_REG		Timer prescaler/enable			R/W, Page 4
-$020870			INT_ENABLE_REG		Interrupt enable (VBLANK, etc.)		R/W, Page 4
-$020871			INT_STATUS_REG		Interrupt status (read-clear)		Read-only, Page 4
-$021000-$02177F		Text Character Map	32x30 text cells (2 bytes each)		R/W, Page 5
-$021800-$021B7F		Tilemap			32x30 tilemap (2 bytes each)		R/W, Page 5
+This section details all Special Function Registers (SFRs) used by the FC-8 system.
+SFRs are primarily located in physical memory Page 4 ($020000-$027FFF) and Page 5 ($028000-$02FFFF).
+They are accessed by the CPU via the paged memory window ($8000-$FFFF) when PAGE_SELECT_REG is set appropriately.
+
+**Access Types Legend:**
+*   R/W: Read/Write
+*   R: Read-only
+*   W: Write-only
+*   R_C: Read with Side Effect (e.g., clears a bit or flag)
+*   W_S: Write with Side Effect (e.g., triggers action, auto-increments address)
+*   R/W_S: Read/Write, Write has Side Effect
+*   R/W_C: Read/Write, Write has Clearing mechanism (e.g. write '1' to clear for INT_STATUS_REG)
+
+| Address Range   | Name                     | Access | Reset (Hex) | Bit-field Summary & Side Effects (R=Read, W=Write, B=Bit)                                                                                                | Brief Description (Original Context)     |
+|-----------------|--------------------------|--------|-------------|----------------------------------------------------------------------------------------------------------------------------------------------------------|------------------------------------------|
+| **CPU Internal (Zero Page Mapped)** |                          |        |             |                                                                                                                                          |                                          |
+| $00FE           | PAGE_SELECT_REG          | R/W    | Cart(1)/$00 | B0-4: Page for $8000-$FFFF. B5-7: Reserved (R0,W0). (1)Reset: Cartridge Initial Code Page (Sec 4) or $00 if no cart.                                   | Page Select for $8000-$FFFF window       |
+| **SFR Page 4 ($020000 - $027FFF)** |                          |        |             |                                                                                                                                          |                                          |
+| $020000-$0200FF | Screen Bounding Offsets  | R/W    | $00 (each)  | 256 individual 8-bit registers. See Sec 9.5.                                                                                                             | Per-column vertical offset for screen    |
+| $020100         | VRAM_FLAGS_REG           | R/W    | $00         | B0:MirrorX, B1:MirrorY, B2:FlipScreenX, B3:FlipScreenY, B4-7:CoarseYOffset (signed, 2's comp.). Other bits R0,W0. See Sec 9.4.                             | VRAM mirror/flip/coarse scroll           |
+| $020101         | VRAM_SCROLL_X_REG        | R/W    | $00         | 8-bit value for fine horizontal scroll. See Sec 9.4.                                                                                                     | Fine horizontal scroll (pixels)          |
+| $020102         | VRAM_SCROLL_Y_REG        | R/W    | $00         | 8-bit value for fine vertical scroll. See Sec 9.4.                                                                                                       | Fine vertical scroll (pixels)            |
+| $020200-$0205FF | Sprite Attribute Table   | R/W    | $00 (each)  | 256 entries, 4 bytes each. Byte0:SpriteID ($FF=disabled), B1:X-Pos, B2:Y-Pos, B3:Attrs(B0:FlipX,B1:FlipY,B2:Priority). B3[3-7] Res(R0,W0). See Sec 10.2. | Sprite attribute entries                 |
+| $020600         | GAMEPAD1_STATE_REG       | R      | $00         | B0:Up, B1:Down, B2:Left, B3:Right, B4:A, B5:B, B6:Start, B7:Select. Reflects debounced state. See Sec 7.                                                 | Gamepad 1 button states                  |
+| $020601         | GAMEPAD2_STATE_REG       | R      | $00         | Bit fields same as GAMEPAD1_STATE_REG. See Sec 7.                                                                                                        | Gamepad 2 button states                  |
+| $020602         | INPUT_STATUS_REG         | R      | $00         | B0:Gamepad1 Connected (1=yes), B1:Gamepad2 Connected (1=yes). B2-7: Reserved (R0). See Sec 7.                                                             | Controller connection status             |
+| $020700         | CH1_FREQ_LO_REG          | R/W    | $00         | Low byte of Channel 1 frequency value (`FVAL`). See Sec 8.2.                                                                                             | Channel 1 Freq Lo                        |
+| $020701         | CH1_FREQ_HI_REG          | R/W    | $00         | High byte of Channel 1 frequency value (`FVAL`). See Sec 8.2.                                                                                            | Channel 1 Freq Hi                        |
+| $020702         | CH1_VOL_ENV_REG          | R/W    | $00         | B7-4:Volume(0-15), B3:EnvelopeEn(1=on), B2-0:EnvRate(0-7). See Sec 8.2.                                                                                  | Channel 1 Volume & Envelope            |
+| $020703         | CH1_WAVE_DUTY_REG        | R/W    | $00         | B7-6:Wave(00=Sq,01=Saw,10=Tri,11=Noise), B5-4:SqDuty(00=12.5%..11=75%). B3-0:Res(R0,W0). See Sec 8.2.                                                   | Channel 1 Waveform & Duty Cycle        |
+| $020704         | CH1_CTRL_REG             | R/W_S  | $00         | B0:Trigger(W1S,AutoClear), B7:Enable(1=on). B1-6:Res(R0,W0). See Sec 8.2.                                                                                | Channel 1 Control (Trigger, Enable)      |
+| $020705-$020709 | CH2 Audio Registers      | R/W    | All $00     | Structure identical to CH1 regs ($020700-$020704). See Sec 8.2.                                                                                           | Channel 2 Audio Control                  |
+| $02070A-$02070E | CH3 Audio Registers      | R/W    | All $00     | Structure identical to CH1 regs ($020700-$020704). See Sec 8.2.                                                                                           | Channel 3 Audio Control                  |
+| $02070F-$020713 | CH4 Audio Registers      | R/W    | All $00     | Structure identical to CH1 regs ($020700-$020704). VOL_ENV[7:4] for PCM data. See Sec 8.2 & 8.4.                                                          | Channel 4 Audio Control / PCM            |
+| $0207F0         | AUDIO_MASTER_VOL_REG     | R/W    | $00         | B0-2: Master Volume (0-7, 0=mute). B3-7: Reserved (R0,W0). See Sec 8.6.                                                                                  | Master audio volume                      |
+| $0207F1         | AUDIO_SYSTEM_CTRL_REG    | R/W    | $00         | B0: Audio System Enable (1=on, 0=mute all). B1-7: Reserved (R0,W0). See Sec 8.6.                                                                         | Audio system enable/global mute          |
+| $020800         | SCREEN_CTRL_REG          | R/W    | $00         | B0:DisplayEnable(1=on), B1:Mode(0=240vis,1=256vis). B2-7:Reserved(R0,W0). See Sec 6.3 & 9.6.                                                              | Display enable/screen mode               |
+| $020810         | PALETTE_ADDR_REG         | W      | $00         | 8-bit index (0-255). Sets the internal address pointer for PALETTE_DATA_REG. Does not auto-increment on its own write. See Sec 11.                         | Palette RAM Address Pointer            |
+| $020811         | PALETTE_DATA_REG         | W_S    | Undef.      | 8-bit R3G3B2 color (B7-5:R,B4-2:G,B1-0:B). Written to Palette RAM at current PALETTE_ADDR_REG. PALETTE_ADDR_REG auto-increments after this write. See Sec 11. | Palette RAM Data Port                  |
+| $020820         | FRAME_COUNT_LO_REG       | R      | $00         | Low byte of 16-bit frame counter. Reading LO latches HI byte. Increments at VBLANK start. See Sec 6.3.                                                     | Frame counter low byte                   |
+| $020821         | FRAME_COUNT_HI_REG       | R      | $00         | High byte of 16-bit frame counter. Value is latched upon read of FRAME_COUNT_LO_REG. See Sec 6.3.                                                            | Frame counter high byte                  |
+| $020830         | RAND_NUM_REG             | R/W    | $00 (2)     | 8-bit LFSR. Write seeds LFSR. Reads current value. Free-running. (2)Actual reset value may vary if LFSR is un-gated. See Sec 6.3.                            | Pseudo-random number generator         |
+| $020840         | TEXT_CTRL_REG            | R/W    | $00         | B0:Enable, B1:Priority(1=Over Sprites), B2:Blink(1Hz), B3:FontSelect(0=BuiltIn,1=Custom). B4-7:Res(R0,W0). See Sec 12.                                    | Text layer control                       |
+| $020850         | VSYNC_STATUS_REG         | R_C    | $00         | B0:IN_VBLANK (1=VBLANK). B1:NEW_FRAME (1=new frame). Reading this register clears B1 (NEW_FRAME). See Sec 6.3.                                             | VSync status (VBLANK, new frame)         |
+| $020860         | TIMER_CTRL_REG           | R/W    | $00         | B0-3:PrescalerSelect(cpu_clk/(2^N)). B4:Enable(1=run/reset_ctr). B5-7:Res(R0,W0). See Sec 13.1.                                                             | Timer prescaler/enable                 |
+| $020870         | INT_ENABLE_REG           | R/W    | $00         | B0:VBLANK_En, B1:Timer_En, B2:External_En. B3-7:Res(R0,W0). See Sec 13.2.                                                                                | Interrupt enable masking                 |
+| $020871         | INT_STATUS_REG           | R/W_C  | $00         | B0:VBLANK_Pend, B1:Timer_Pend, B2:External_Pend. B3-7:Res(R0). Write '1' to clear respective pending bit. See Sec 13.2.                                     | Interrupt status (pending flags)         |
+| **SFR Page 5 ($028000 - $02FFFF)** |                          |        |             |                                                                                                                                          |                                          |
+| $021000-$02177F | Text Character Map       | R/W    | $00 (each)  | 32x30 cells, 2 bytes/cell (CharCode, Attrs). Attrs: B0-3:FG_Pal, B4-7:BG_Pal. BG_Pal $0=transparent. See Sec 12.                                           | Text mode character/attribute map        |
+| $021800-$021B7F | Tilemap Definition RAM   | R/W    | $00 (each)  | 32x30 cells, 2 bytes/cell (TileID, Attrs). Attrs: B0-3:PaletteIdx, B4:FlipX, B5:FlipY. B6-7:Res(R0,W0). See Sec 9.3.                                     | Tilemap mode definition data             |
 
 ------------------------------------------------------------
 
@@ -648,29 +1150,181 @@ Creative Commons Attribution-ShareAlike 4.0 International (https://creativecommo
 
 19. FPGA Implementation Guidance
 
-* Clocking:
-  - Master Clock: 20MHz.
-  - CPU Clock: 5MHz (divide master by 4).
-  - Pixel Clock: 5.03MHz (256x240 at 60Hz, derived from master).
-  - Audio Clock: 1MHz (for PWM output).
-* Video Output:
-  - Format: VGA, 320x262 total pixels (256x240 visible).
-  - Timing: 31.77µs per scanline, 16.67ms per frame.
-  - Sync: Horizontal/vertical sync signals per VGA standard.
-* Audio Output:
-  - Format: PWM, 4-channel mixer.
-  - Resolution: 8-bit per channel, 1MHz sample rate.
-* Memory:
-  - BRAM: 32 KiB Fixed RAM, 64 KiB VRAM, 8 KiB SFRs.
-  - External Flash: 832 KiB cartridge ROM.
-* Architecture:
-  - CPU: 8-bit core with fetch-decode-execute pipeline.
-  - Video: Scanline buffer for VRAM/sprite rendering.
-  - Audio: 4-channel waveform generator with PWM output.
-* Debugging:
-  - Use ChipScope/SignalTap for on-chip signal analysis.
-  - Expose PC, registers, and SFRs via debug interface.
-* Reference: Implement state machines for CPU, video, and audio based on Section 5, 9, and 8.
+This section provides guidance for implementing the FC-8 Virtual Machine on an FPGA platform. It covers critical aspects such as clocking, memory interfaces, I/O handling, CPU core design, and resource considerations.
+
+**19.1. Clocking Details**
+
+*   **Master Clock:** The primary clock source for the FPGA, assumed to be 20MHz as a baseline. All other system clocks are derived from this master clock.
+*   **Clock Domains:**
+    *   **CPU Clock (cpu_clk):** 5MHz. Derived by dividing the master clock by 4. This clock governs the CPU core operations.
+    *   **Pixel Clock (pixel_clk):** Approximately 5.03MHz. This clock is used for driving the VGA output. For a 256x240 visible resolution at 60Hz with 262 total scanlines, the calculation is: (256 + HBlank_Pixels) * 262 * 60 = Total_Pixels_Per_Second. Assuming standard VGA horizontal timings (e.g., HBlank ~80 pixels), total horizontal pixels would be around 336. So, 336 * 262 * 60Hz = ~5.28 MHz. The value 5.03MHz implies a total horizontal pixel count of ~318 (318 * 262 * 60 = ~5.00MHz). This spec should be used: 318 total horizontal pixels. The exact derivation might involve a PLL or clock divider network to achieve the required frequency from the master clock.
+    *   **Audio Clock (audio_clk):** 1MHz. Derived by dividing the master clock by 20. This clock is primarily used for the audio PWM generation and potentially for timing audio sample updates.
+    *   **Memory Interface Clocks:**
+        *   BRAM (Fixed RAM, VRAM, SFRs): Synchronous to the CPU clock (5MHz) as they are tightly coupled with the CPU's address and data buses.
+        *   External Flash (Cartridge ROM): May operate asynchronously or synchronously to a derivative of the CPU clock, depending on the Flash memory's characteristics. If synchronous, it might use the CPU clock directly or a slower, derived clock.
+*   **Synchronization Methods:**
+    *   **Asynchronous FIFOs:** Recommended for data transfer between largely independent clock domains, such as between the CPU domain and the pixel clock domain for VRAM data fetching by the video controller, or for audio data being sent to the audio PWMs.
+    *   **Two-Stage Synchronizers (Double Flopping):** Essential for control signals and status flags crossing clock domains (e.g., VSYNC status from video domain to CPU domain). This mitigates metastability.
+    *   **Handshaking Logic:** For commands or data transfers where acknowledgement is required between domains.
+*   **Clock Derivation Examples (from 20MHz Master):**
+    *   CPU Clock: 20MHz / 4 = 5MHz.
+    *   Pixel Clock: Derived via PLL or fractional divider to achieve ~5.03MHz (e.g., using a ratio like 20MHz * (503/2000) if feasible, or more practically, adjust total horizontal pixels to fit a simpler division from 20MHz, like 20MHz/4 = 5MHz if total horizontal pixels were 318 and total vertical lines 262, giving 5MHz / (318*262) = ~60.1Hz. For 60Hz exact with 262 lines, that's 15720 lines/sec. If pixel clock is 5.03MHz, then 5.03MHz / 15720 lines/sec = ~319.97 pixels/line. Let's stick to spec's ~5.03MHz and ~318 total horizontal pixels.
+    *   Audio Clock: 20MHz / 20 = 1MHz.
+
+**19.2. Memory Interface Specifications**
+
+*   **BRAM (On-Chip):**
+    *   **Fixed RAM (CPU $0000-$7FFF):**
+        *   Bus Width: 8-bit data, 15-bit address (for 32KB).
+        *   Interface: Synchronous to cpu_clk.
+        *   Read Cycle: Address presented, data available on the next rising edge of cpu_clk. (1 cycle latency).
+        *   Write Cycle: Address and data presented, write occurs on the next rising edge of cpu_clk. (1 cycle latency).
+    *   **VRAM (Physical $010000-$01FFFF):**
+        *   Bus Width: 8-bit data. The CPU accesses it via an 8-bit bus. The video controller might have a wider internal path (e.g., 16-bit or 32-bit) for faster scanline rendering, reading multiple pixels simultaneously.
+        *   Interface: Dual-port BRAM is ideal. One port synchronous to cpu_clk for CPU access, the other port synchronous to pixel_clk (or a related clock) for video display hardware. If dual-port is not available, an arbiter is needed, prioritizing video display to avoid artifacts, potentially stalling CPU access.
+        *   CPU Read/Write: Similar to Fixed RAM (1 cycle latency relative to cpu_clk).
+    *   **SFRs (Physical $020000-$027FFF):**
+        *   Bus Width: 8-bit data, address decoded from CPU's address bus.
+        *   Interface: Synchronous to cpu_clk.
+        *   Read/Write Cycle: Typically 1 cpu_clk cycle. Some SFRs might have side effects on write (e.g., triggering audio) or update dynamically (e.g., VSYNC_STATUS_REG).
+*   **External Flash (Cartridge ROM, Off-Chip):**
+    *   Bus Width: 8-bit data. Address lines depend on the total ROM size (832 KiB requires 20 address lines, but CPU provides 16 logical + bank selection). The FPGA will manage the full physical address generation.
+    *   Interface: Can be asynchronous or synchronous.
+        *   **Asynchronous Flash:**
+            *   Read Cycle: CPU asserts address and Chip Enable (CE#) / Output Enable (OE#). Data is available after the Flash's access time (tACC). CPU latches data. This is typically slower than synchronous BRAM.
+            *   Timing Diagram (Conceptual):
+                1. CPU sets Address lines.
+                2. CPU asserts CE# and OE#.
+                3. Wait for tACC of Flash.
+                4. CPU reads Data lines.
+                5. CPU de-asserts CE#/OE#.
+        *   **Synchronous Flash (Burst Mode often available):**
+            *   Read Cycle: CPU asserts address and control signals. Data is returned on a subsequent clock edge, possibly after several wait states.
+    *   **Wait States:** Access to external Flash is likely slower than the CPU clock (5MHz). If cpu_clk is 200ns:
+        *   If Flash tACC is >200ns, wait states are needed. For example, a 100ns Flash might be accessible in 1 CPU cycle if interface logic is fast enough, but a 250ns Flash would require at least one wait state (CPU clock cycle stretched or stalled).
+        *   The number of wait states should be configurable or determined by the chosen Flash part. The ISA specifies 4 cycles for ROM reads, implying some inherent wait states are already factored in compared to 1-cycle BRAM. This means the memory controller for ROM should enforce this timing.
+
+**19.3. I/O Interface Elaborations**
+
+*   **Gamepad Input ($020600, $020601):**
+    *   Latching: Gamepad button states should be latched synchronously with a stable clock, ideally once per frame (e.g., triggered by VBLANK start) to provide a consistent snapshot for the CPU.
+    *   Debouncing: Section 7 states "Hardware debouncing ensures stable button states (10ms latency)." This implies the FPGA design *must* include debouncing logic for each button input. A simple debouncer uses a counter: when a button state changes, a counter starts. If the state remains stable for N clock cycles (e.g., corresponding to 5-10ms), the new state is accepted. For a 1MHz clock, 10ms = 10,000 cycles.
+    *   CPU Read: The CPU reads the latched, debounced state from GAMEPAD_STATE_REGs. This read is synchronous to cpu_clk.
+*   **Video Output (VGA):**
+    *   Resolution: 256x240 visible area.
+    *   Refresh Rate: 60Hz.
+    *   Total Scanlines: 262 (240 visible, 22 VBLANK).
+    *   Pixel Clock: ~5.03MHz (derived from master clock). This implies ~318 total horizontal pixels (256 visible + ~62 HBLANK).
+    *   VGA Timing (Example, needs to sum to ~318 pixels horizontally and 262 lines vertically):
+        *   Horizontal Timing (per line, ~31.77 µs total with ~5.03MHz pixel_clk means ~159 pixel_clk cycles. Or, if using the previously stated 318 total horizontal pixels: 318 cycles of pixel_clk):
+            *   H-Sync Pulse Width: e.g., ~3.8 µs (~19 pixel_clk cycles if pixel_clk is ~5MHz; typical VGA is ~3.77us).
+            *   H-Back Porch: e.g., ~1.9 µs (~10 pixel_clk cycles; typical VGA is ~1.89us).
+            *   H-Active Pixels: 256 pixel_clk cycles.
+            *   H-Front Porch: e.g., ~0.8 µs (~4 pixel_clk cycles; typical VGA is ~0.94us).
+            *   (These are examples; precise values need to be chosen to match standard VGA timings as closely as possible while achieving the 256 visible pixels and total line/frame times.)
+        *   Vertical Timing (per frame, ~16.67 ms total):
+            *   V-Sync Pulse Width: e.g., 2 scanlines (2 * ~31.77 µs = ~63.5 µs).
+            *   V-Back Porch: e.g., ~33 scanlines.
+            *   V-Active Scanlines: 240 scanlines.
+            *   V-Front Porch: e.g., ~10 scanlines.
+            *   (Again, examples; must sum to 262 total lines and adhere to VGA specs.)
+    *   Color Output: R3G3B2 digital signals directly to a DAC or resistor ladder for analog VGA.
+*   **Audio Output:**
+    *   PWM Generation: Each of the 4 channels requires a PWM generator.
+    *   Conversion: The 8-bit audio data (volume for square/saw/triangle, or PCM sample for channel 4) for each channel modulates the duty cycle of its PWM signal.
+        *   For waveform channels (square, saw, triangle), the channel's frequency determines the fundamental of the sound, and its 4-bit volume (0-15 from CHx_VOL_ENV_REG) is scaled to an 8-bit value (e.g., volume * 17) to set the PWM duty cycle.
+        *   For PCM on Channel 4, the 4-bit sample (from CH4_VOL_ENV_REG) is scaled to an 8-bit value to set the PWM duty cycle. The "frequency" registers for Channel 4 when in PCM mode might be repurposed or simply set to a fixed high frequency for the PWM carrier.
+    *   PWM Carrier Frequency: This should be significantly higher than the highest audio frequency to be represented. Using the 1MHz audio_clk as the PWM counter clock, an 8-bit PWM provides 256 steps. The PWM carrier frequency would be audio_clk / 256 = 1MHz / 256 = ~3.9kHz. This is quite low and may result in audible noise. A faster carrier is desirable (e.g., master_clk / 256 = 20MHz / 256 = ~78kHz, or use a higher-resolution PWM if resources allow). If audio_clk is strictly for sample update timing (e.g. 8kHz PCM), the PWM itself might run off master_clk. Section 8 implies audio_clk is 1MHz for frequency generation (Hz = 1,000,000 / (value+1)), so this is also the base for PWMs.
+    *   Mixing:
+        *   Digital Mixing: The 4 digital PWM signals can be digitally summed (requiring careful bit width management to avoid overflow) and then fed to a single DAC. This is complex.
+        *   Analog Mixing: More common for simple systems. Each PWM output is passed through a low-pass filter (RC filter) to convert it to an analog voltage. These analog signals are then summed using an op-amp mixer or a passive resistor network.
+        *   The AUDIO_MASTER_VOL_REG would control the final output level, either by scaling the digital sum or by controlling the gain of an analog amplifier.
+
+**19.4. CPU Core Implementation Guidance**
+
+*   **Pipeline Structure:** A simple 3-stage or 5-stage pipeline is common for 8-bit CPUs.
+    *   Example 3-Stage: Fetch, Decode, Execute.
+    *   Example 5-Stage (more typical for slightly more complex CPUs):
+        1.  **Fetch:** Load instruction byte from memory (PC points to address). Increment PC.
+        2.  **Decode:** Determine instruction type, addressing mode, and operand bytes.
+        3.  **Execute:** Perform ALU operation, calculate effective addresses.
+        4.  **Memory Access:** Read/write data from/to memory or SFRs if the instruction requires it.
+        5.  **Writeback:** Write results back to registers (A, X, Y, F).
+*   **Pipeline Stalls:**
+    *   **Memory Access Stalls:** If accessing slower memory (like external Flash requiring wait states), the pipeline must stall. The Memory Access stage would signal a stall to earlier stages, preventing them from overwriting registers or fetching new instructions until the current memory operation completes.
+    *   **Multi-Cycle Instructions:** Instructions like ASL zp (5 cycles) or JSR (6 cycles) will occupy the Execute/Memory stages for multiple cycles. Simpler implementations might freeze the pipeline, while more advanced ones could allow some stages to continue if no hazards exist.
+    *   **Branch Hazards:** When a branch is taken, instructions already fetched and decoded from the non-branched path must be flushed from the pipeline.
+*   **Interrupt Handling (NMI, IRQ):**
+    *   Detection: Interrupt requests (VBLANK, Timer, External) are typically detected at the end of an instruction cycle, before the next Fetch.
+    *   Process (aligns with Section 13):
+        1.  If an interrupt is pending and the I flag in F is clear (for IRQ) or it's an NMI:
+        2.  Complete current instruction.
+        3.  CPU internally disables further interrupts (similar to setting I flag).
+        4.  Push current PC (high byte, then low byte) onto the stack.
+        5.  Push Flag Register (F) onto the stack.
+        6.  Set the I flag in F to 1 (masking further IRQs; NMI is non-maskable but this prevents nested IRQs from the same NMI handler without explicit CLI).
+        7.  Load PC with the address from the corresponding interrupt vector ($FFFA-$FFFB for NMI, $FFF8-$FFF9 for IRQ).
+    *   RTI Instruction: Pops F, then PC from stack, restoring CPU state and re-enabling interrupts if I was clear in the popped F.
+*   **Reset Signal Behavior:**
+    *   Discussed in section 19.6.
+
+**19.5. FPGA Resource Considerations (High-Level Estimates)**
+
+These are very rough estimates and depend heavily on the specific FPGA architecture and design choices.
+*   **CPU Core:**
+    *   LUTs: 500-1500 (depending on pipeline complexity, instruction decoding logic)
+    *   Flip-Flops: 200-500 (for registers, pipeline stages, state machines)
+    *   BRAM Blocks: None directly for core logic, but uses BRAM for RAM/ROM.
+*   **VRAM Controller (including scroll, sprite overlay logic):**
+    *   LUTs: 800-2000 (address generation, pixel fetching, sprite priority, color lookup)
+    *   Flip-Flops: 300-700 (scanline buffers, state machines, timing generators)
+    *   BRAM Blocks: For line buffers if not using dual-port VRAM efficiently.
+*   **Sprite Engine (data fetching, rendering logic):**
+    *   LUTs: 300-600 per sprite displayed simultaneously on a line (if fully parallel), or less if serialized. For 8 sprites/scanline, potentially 500-1000 LUTs.
+    *   Flip-Flops: 200-400.
+*   **Audio Mixer (4 channels, PWM generators, envelope logic):**
+    *   LUTs: 200-400 per channel. Total: 800-1600.
+    *   Flip-Flops: 100-200 per channel. Total: 400-800.
+*   **Memory Interface (BRAM controllers, Flash interface):**
+    *   LUTs: 200-500 (address decoding, wait state generation, bank switching logic)
+    *   Flip-Flops: 100-200.
+*   **SFR Block:**
+    *   LUTs: 100-300 (register decoding, read/write logic)
+    *   Flip-Flops: Number of bits in all SFRs (e.g., ~50-100 FFs for storage).
+*   **Total (Very Speculative):**
+    *   LUTs: 3000 - 7000+
+    *   Flip-Flops: 1500 - 3000+
+    *   BRAM Blocks (for 32KB Fixed RAM + 64KB VRAM): Depends on FPGA's BRAM primitive size. E.g., if 18Kbit blocks, 32KB RAM ~ 16 blocks (if 8-bit wide). 64KB VRAM ~ 32 blocks. Total ~48+ blocks (some FPGAs allow 36Kbit blocks, reducing count).
+*   **Beneficial FPGA Features:**
+    *   **Block RAM (BRAM):** Essential for on-chip RAM and VRAM. Dual-port BRAM is highly beneficial for VRAM to decouple CPU and video controller access.
+    *   **PLLs/Clock Management Tiles:** For generating the various clock frequencies accurately.
+    *   **Dedicated Multipliers/DSPs:** Not heavily required by FC-8's simple ISA. Could be useful if any complex audio processing (e.g., filtering beyond simple PWM LPF) or advanced graphics effects were added in future versions.
+
+**19.6. Reset Signal Behavior**
+
+*   **Global Reset Signal (rst_n or rst):**
+    *   Type: Typically active-low (e.g., `rst_n`) for many FPGA development boards and common practice, but can be active-high. The choice should be documented. Let's assume **active-low** for this guidance.
+    *   Synchronicity: It is strongly recommended to have an **asynchronous reset input** to the FPGA, which is then **internally synchronized** to each clock domain before being distributed to the logic within that domain. This prevents reset pulse width issues and metastability on de-assertion.
+*   **Effect on Key Components:**
+    *   **CPU Registers:**
+        *   PC: Loaded with the address from the cartridge header's Program Entry Point ($030026-$030027). If no valid cartridge, PC set to $0000. PAGE_SELECT_REG is also set from cartridge header ($030038) or $00.
+        *   SP: Initialized to $0100.
+        *   A, X, Y Registers: Initialized to $00.
+        *   Flag Register (F): Initialized to $00 (all flags N, V, Z, C, I cleared).
+    *   **Memory:**
+        *   Fixed RAM ($000000-$007FFF, physical): Initialized to $00. This can be done by FPGA's BRAM initialization feature or by a hardware reset sequence.
+        *   VRAM ($010000-$01FFFF, physical): Initialized to $00 (transparent/black).
+        *   Cartridge ROM: Not affected by reset (it's Read-Only Memory).
+    *   **SFRs (Special Function Registers, physical $020000-$027FFF):**
+        *   Initialized to their default states as per Section 15. Examples:
+            *   SCREEN_CTRL_REG ($020800): $00 (Display off, Bitmap mode).
+            *   AUDIO_MASTER_VOL_REG ($0207F0): $00 (Mute).
+            *   AUDIO_SYSTEM_CTRL_REG ($0207F1): $00 (Audio system off).
+            *   INT_ENABLE_REG ($020870): $00 (All interrupts disabled).
+            *   PAGE_SELECT_REG ($00FE in Fixed RAM): Set from cartridge header or $00.
+    *   **Internal State Machines:** All state machines within the CPU, video controller, audio controller, and other peripheral logic should revert to their defined initial states. For example, pipeline registers in the CPU should be cleared or invalidated. Video controller should start from scanline 0, VBLANK state. Audio channels should be silenced.
+
+This detailed guidance should provide a solid foundation for an FPGA engineer to begin implementation.
 
 ------------------------------------------------------------
 
