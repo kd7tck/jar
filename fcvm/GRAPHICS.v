@@ -20,11 +20,31 @@ module fc8_vga (
 
     // Default palette (Section 11, Appendix)
     reg [7:0] palette [0:255];
+    integer i; // Declare loop variable for initial block
+
     initial begin
-        palette[0] = 8'h00; // Transparent
-        palette[1] = 8'hE0; // White
-        palette[2] = 8'h1C; // Black
-        // Initialize remaining palette entries
+        // Define a 16-color base palette (R3G3B2 format)
+        palette[0]  <= 8'b00000000; // 0: Black (Can be treated as transparent color key)
+        palette[1]  <= 8'b11111111; // 1: White
+        palette[2]  <= 8'b11100000; // 2: Bright Red
+        palette[3]  <= 8'b00011100; // 3: Bright Green
+        palette[4]  <= 8'b00000011; // 4: Bright Blue
+        palette[5]  <= 8'b11111100; // 5: Yellow (R+G)
+        palette[6]  <= 8'b11100011; // 6: Magenta (R+B)
+        palette[7]  <= 8'b00011111; // 7: Cyan (G+B)
+        palette[8]  <= 8'b11011010; // 8: Orange (R=6, G=6, B=2)
+        palette[9]  <= 8'b00101101; // 9: Light Blue (R=1, G=3, B=1)
+        palette[10] <= 8'b10110101; // 10: Medium Gray (R=5, G=5, B=1)
+        palette[11] <= 8'b01001001; // 11: Dark Gray (R=2, G=2, B=1)
+        palette[12] <= 8'b11110000; // 12: Bright Yellow (R=7, G=4, B=0)
+        palette[13] <= 8'b10001000; // 13: Brown (R=4, G=2, B=0)
+        palette[14] <= 8'b10101010; // 14: Another Gray (R=5, G=2, B=2)
+        palette[15] <= 8'b01101101; // 15: Light Green (R=3, G=3, B=1)
+
+        // Repeat the 16-color pattern for the rest of the palette
+        for (i = 16; i < 256; i = i + 1) begin
+            palette[i] <= palette[i % 16];
+        end
     end
 
     always @(posedge clk or negedge rst_n) begin
