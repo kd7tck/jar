@@ -39,9 +39,9 @@ Table of Contents
 
 2. Introduction
 
-This document outlines the technical specifications for the FC-8 (Fantasy Console 8-bit), a virtual machine for creating and playing retro-style games. It details hardware architecture, memory organization, graphics, audio, input, interrupts, and error handling, serving as a guide for developers creating games, emulators, or tools. The FC-8 targets hobbyists and students, supporting genres like platformers, puzzlers, shoot 'em ups, and text adventures. Community resources and tools are available (see Section 21).
+This document outlines the technical specifications for the FC-8 (Fantasy Machine), a virtual machine for retro-style game development. It details hardware architecture, memory organization, graphics, audio, input systems, interrupt handling, and error conditions, serving as a guide for developers creating games, emulators, or tools. The FC-8 targets hobbyists and students, supporting platformers, puzzlers, shooters, and text adventures. Community resources and tools are listed in Section 21.
 
-The FC-8 is simple yet flexible, balancing retro aesthetics with modern usability. Version 0.4.0 ensures backward compatibility with v0.3.0 cartridges and introduces enhanced functionality.
+The FC-8 balances retro aesthetics with modern usability. Version 0.4.0 ensures backward compatibility with v0.3.0 cartridges and adds features for enhanced functionality, making it developer-friendly for retro games.
 
 ------------------------------------------------------------
 
@@ -50,43 +50,43 @@ The FC-8 is simple yet flexible, balancing retro aesthetics with modern usabilit
 The FC-8 uses a 1MB physical address space ($000000-$0FFFFF). The CPU operates with a 16-bit logical address space ($0000-$FFFF, 64 KiB), accessing the full 1MB via bank switching.
 
 CPU Logical Address Space & Memory Mapping
-* $0000-$7FFF (32 KiB): Fixed RAM Block. Maps to physical $000000-$007FFF, containing:
-  - $0000-$00FD: Zero Page RAM (fast addressing).
+* $0000-$7FFF (32 KiB): Fixed RAM Block. Maps to physical $000000-$007FFF:
+  - $0000-$00FD: Zero-page RAM (fast addressing).
   - $00FE: PAGE_SELECT_REG (8-bit, controls bank switching).
-  - $00FF: Reserved Zero Page location.
-  - $0100-$7FFF: Stack and General Purpose RAM. Stack Pointer (SP) starts at $0100, grows to $7FFF.
+  - $00FF: Reserved zero-page location.
+  - $0100-$7FFF: Stack and general-purpose RAM. Stack Pointer (SP) starts at $0100, grows to $7FFF.
 * $8000-$FFFF (32 KiB): Paged Memory Window. Maps to one of 32 physical 32 KiB pages via PAGE_SELECT_REG.
 
 Bank Switching Mechanism
 * PAGE_SELECT_REG at $00FE:
   - Bits 0-4 select one of 32 pages (0-31). Bits 5-7 reserved (write 0, read 0).
-  - Physical address for logical $8000-$FFFF: Physical_Address = (PAGE_SELECT_REG[4:0] * 0x8000) + (Logical_CPU_Address - 0x8000).
+  - Physical address for logical $8000-$FFFF: Physical = (PAGE_SELECT_REG[4:0] * 0x8000) + (Logical_Address - 0x8000).
   - Example: PAGE_SELECT_REG[4:0] = 2, logical $8100 maps to physical $10100.
-  - If PAGE_SELECT_REG[4:0] = 0, $8000-$FFFF aliases $000000-$007FFF.
+  - If PAGE_SELECT=0, $8000-$FFFF aliases $000000-$007FFF.
 
 Physical Memory Allocation (1MB)
 * $000000-$007FFF (Page 0): Fixed RAM Block.
 * $008000-$00FFFF (Page 1): Reserved (e.g., save RAM).
-* $010000-$017FFF (Page 2): VRAM (first 32 KiB, bitmap lines 0-127 or tilemap).
-* $018000-$01FFFF (Page 3): VRAM (second 32 KiB, bitmap lines 128-255 or tile patterns).
+* $010000-$017FFF (Page 2): VRAM (bitmap lines 0-127 or tilemap data).
+* $018000-$01FFFF (Page 3): VRAM (bitmap lines 128-255 or tile patterns).
 * $020000-$027FFF (Page 4): Special Function Registers (SFRs).
-* $028000-$02FFFF (Page 5): Additional SFRs (e.g., text character map).
+* $028000-$02FFFF (Page 8): Additional SFRs (e.g., text character map, tilemap).
 * $030000-$0FFFFF (Pages 6-31): Cartridge ROM (832 KiB).
 
 System State on Reset/Power-On
 * CPU Registers:
-  - Program Counter (PC): Set to Cartridge Header's Program Entry Point (16-bit logical address). PAGE_SELECT_REG set to Initial Code Page Select.
+  - Program Counter (PC): Set to cartridge header's Program Entry Point (16-bit logical address). PAGE_SELECT_REG set to Initial Code Page Select.
   - Stack Pointer (SP): $0100 (stack grows to $7FFF).
   - Accumulator (A), Index X (X), Index Y (Y): $00.
-  - Flag Register (F): $00 (N, V, Z, C cleared).
+  - Flag Register (F): $00 (N, V, Z, C, I cleared).
 * Memory and SFRs:
   - Fixed RAM ($0000-$7FFF): Initialized to $00.
   - VRAM ($010000-$01FFFF): Initialized to $00 (transparent/black).
-  - Text Character Map ($021000-$02177F): Initialized to $00 (space, transparent).
+  - Text Character Map ($021000-$027FFF): Initialized to $00 (space character, transparent).
   - Palette: Default 256-color palette (Section 11).
   - PAGE_SELECT_REG ($00FE): Set to Initial Code Page Select or $00 if no cartridge.
   - Other SFRs: See Section 15 for defaults.
-* No Cartridge: If invalid magic number, PC jumps to $0000 (halt loop: JMP $0000). Text layer may display "No Cartridge".
+* No Cartridge: If invalid magic number, PC set to $0000 (halt loop: JMP $0000). Text layer may display "No Cartridge".
 
 ------------------------------------------------------------
 
@@ -98,10 +98,10 @@ Cartridge Header
 First 256 bytes ($030000-$0300FF), Little Endian.
 
 Header Fields
-* $030000-$030003 (4 bytes): Magic Number ("FC8C" ASCII, validates cartridge).
+* $030000-$030003 (4 bytes): Magic number ("FC8C" ASCII, validates cartridge).
 * $030004-$030023 (32 bytes): Game Title (null-terminated ASCII, max 31 chars + null).
 * $030024-$030025 (2 bytes): Game Version (byte 0: major, byte 1: minor).
-* $030026-$030027 (2 bytes): Program Entry Point (16-bit logical CPU address, typically $8000-$FFFF).
+* $030026-$030027 (2 bytes): Program Entry Point (16-bit logical address, typically $8000-$FFFF).
 * $030028-$030029 (2 bytes): Offset to Program Code (physical offset from $030000).
 * $03002A-$03002B (2 bytes): Size of Program Code (bytes).
 * $03002C-$03002D (2 bytes): Offset to Sprite Data (physical offset).
@@ -118,16 +118,16 @@ Header Fields
 * $0300FC-$0300FF (4 bytes): Save RAM Size (32-bit, bytes, for $008000-$00FFFF).
 
 Data Sections
-* Program Code: FC-8 machine code, executed from Program Entry Point.
-* Sprite Data: 16x16 pixel sprites, 256 bytes each, 8-bit color indices.
-* Sound/Music Data: Waveform parameters, music sequences, or PCM samples.
-* Map Data: Tilemaps or level layouts for VRAM.
+- Program Code: FC-8 machine code, executed from Program Entry Point.
+- Sprite Data: 16x16 pixel sprites, 256 bytes each, 8-bit color indices.
+- Sound/Music Data: Waveform parameters, music sequences, or PCM samples.
+- Map Data: Tilemaps or level layouts for VRAM.
 
 Loading Process
-1. VM reads header at $030000, validates "FC8C" and checksum.
-2. If invalid, halts at $0000 or displays "Invalid Cartridge" on text layer.
-3. Sets PAGE_SELECT_REG to Initial Code Page Select, PC to Program Entry Point.
-4. Game code manages asset access via bank switching.
+1. Read header at $030000, validate "FC8C" and checksum.
+2. If invalid, halt at $0000 or display "Invalid Cartridge" on text layer.
+3. Set PAGE_SELECT_REG to Initial Code Page Select, PC to Program Entry Point.
+4. Game code manages assets via bank switching.
 
 ------------------------------------------------------------
 
@@ -141,13 +141,13 @@ Overall Design
 
 Registers
 * Program Counter (PC): 16-bit, logical address of next instruction.
-* Stack Pointer (SP): 16-bit, ascending stack in $0100-$7FFF, initialized to $0100.
+* Stack Pointer (SP): 16-bit, ascending stack in $0100-$7FFF, starts at $0100.
 * Accumulator (A): 8-bit, for arithmetic/logic.
 * Index X (X), Y (Y): 8-bit, for indexed addressing.
 * Flag Register (F): 8-bit:
   - Bit 7: N (Negative)
   - Bit 6: V (Overflow)
-  - Bit 5: I (Interrupt Disable, 1=disabled)
+  - Bit 5: I (Interrupt Disable, 1 = disabled)
   - Bit 4: - (Unused, read 0)
   - Bit 3: - (Unused, read 0)
   - Bit 2: - (Unused, read 0)
@@ -159,103 +159,103 @@ Instruction Set Architecture (ISA)
 Instructions are 1-3 bytes: opcode + operands.
 
 Complete Opcode Table
-Mnemonic	Opcode	Bytes	Mode		Cycles	Flags		Description
-ADC #val	$69	2	Immediate	2	N,V,Z,C		Add with carry
-ADC zp		$65	2	Zero-Page	3	N,V,Z,C		Add from zero-page
-ADC abs		$6D	3	Absolute	4	N,V,Z,C		Add from absolute
-AND #val	$29	2	Immediate	2	N,Z		Logical AND
-AND zp		$25	2	Zero-Page	3	N,Z		AND from zero-page
-AND abs		$2D	3	Absolute	4	N,Z		AND from absolute
-ASL A		$0A	1	Accumulator	2	N,Z,C		Shift left A
-ASL zp		$06	2	Zero-Page	5	N,Z,C		Shift left zero-page
-ASL abs		$0E	3	Absolute	6	N,Z,C		Shift left absolute
-BCC rel		$90	2	Relative	2/3*	-		Branch if C clear
-BCS rel		$B0	2	Relative	2/3*	-		Branch if C set
-BEQ rel		$F0	2	Relative	2/3*	-		Branch if Z set
-BIT zp		$24	2	Zero-Page	3	N,V,Z		Test bits
-BIT abs		$2C	3	Absolute	4	N,V,Z		Test bits
-BMI rel		$30	2	Relative	2/3*	-		Branch if N set
-BNE rel		$D0	2	Relative	2/3*	-		Branch if Z clear
-BPL rel		$10	2	Relative	2/3*	-		Branch if N clear
-BRK		$00	1	Implied		7	I		Software interrupt
-BVC rel		$50	2	Relative	2/3*	-		Branch if V clear
-BVS rel		$70	2	Relative	2/3*	-		Branch if V set
-CLC		$18	1	Implied		2	C		Clear carry
-CLD		$D8	1	Implied		2	-		Clear decimal (unused)
-CLI		$58	1	Implied		2	I		Clear interrupt disable
-CLV		$B8	1	Implied		2	V		Clear overflow
-CMP #val	$C9	2	Immediate	2	N,Z,C		Compare A
-CMP zp		$C5	2	Zero-Page	3	N,Z,C		Compare zero-page
-CMP abs		$CD	3	Absolute	4	N,Z,C		Compare absolute
-CPX #val	$E0	2	Immediate	2	N,Z,C		Compare X
-CPX zp		$E4	2	Zero-Page	3	N,Z,C		Compare X zero-page
-CPY #val	$C0	2	Immediate	2	N,Z,C		Compare Y
-CPY zp		$C4	2	Zero-Page	3	N,Z,C		Compare Y zero-page
-DEC zp		$C6	2	Zero-Page	5	N,Z		Decrement zero-page
-DEC abs		$CE	3	Absolute	6	N,Z		Decrement absolute
-DEX		$CA	1	Implied		2	N,Z		Decrement X
-DEY		$88	1	Implied		2	N,Z		Decrement Y
-EOR #val	$49	2	Immediate	2	N,Z		Exclusive OR
-EOR zp		$45	2	Zero-Page	3	N,Z		EOR zero-page
-EOR abs		$4D	3	Absolute	4	N,Z		EOR absolute
-INC zp		$E6	2	Zero-Page	5	N,Z		Increment zero-page
-INC abs		$EE	3	Absolute	6	N,Z		Increment absolute
-INX		$E8	1	Implied		2	N,Z		Increment X
-INY		$C8	1	Implied		2	N,Z		Increment Y
-JMP abs		$4C	3	Absolute	3	-		Jump absolute
-JMP ind		$6C	3	Indirect	5	-		Jump indirect
-JSR abs		$20	3	Absolute	6	-		Jump to subroutine
-LDA #val	$A9	2	Immediate	2	N,Z		Load A immediate
-LDA zp		$A5	2	Zero-Page	3	N,Z		Load A zero-page
-LDA abs		$AD	3	Absolute	4	N,Z		Load A absolute
-LDA zp,X	$B5	2	Zero-Page,X	4	N,Z		Load A zero-page,X
-LDA abs,X	$BD	3	Absolute,X	4/5*	N,Z		Load A absolute,X
-LDA abs,Y	$B9	3	Absolute,Y	4/5*	N,Z		Load A absolute,Y
-LDX #val	$A2	2	Immediate	2	N,Z		Load X immediate
-LDX zp		$A6	2	Zero-Page	3	N,Z		Load X zero-page
-LDY #val	$A0	2	Immediate	2	N,Z		Load Y immediate
-LDY zp		$A4	2	Zero-Page	3	N,Z		Load Y zero-page
-LSR A		$4A	1	Accumulator	2	N,Z,C		Shift right A
-LSR zp		$46	2	Zero-Page	5	N,Z,C		Shift right zero-page
-LSR abs		$4E	3	Absolute	6	N,Z,C		Shift right absolute
-NOP		$EA	1	Implied		2	-		No operation
-ORA #val	$09	2	Immediate	2	N,Z		Logical OR
-ORA zp		$05	2	Zero-Page	3	N,Z		OR zero-page
-ORA abs		$0D	3	Absolute	4	N,Z		OR absolute
-PHA		$48	1	Implied		3	-		Push A to stack
-PHP		$08	1	Implied		3	-		Push F to stack
-PHX		$DA	1	Implied		3	-		Push X to stack
-PHY		$5A	1	Implied		3	-		Push Y to stack
-PLA		$68	1	Implied		4	N,Z		Pull A from stack
-PLP		$28	1	Implied		4	All		Pull F from stack
-PLX		$FA	1	Implied		4	N,Z		Pull X from stack
-PLY		$7A	1	Implied		4	N,Z		Pull Y from stack
-ROL A		$2A	1	Accumulator	2	N,Z,C		Rotate left A
-ROL zp		$26	2	Zero-Page	5	N,Z,C		Rotate left zero-page
-ROR A		$6A	1	Accumulator	2	N,Z,C		Rotate right A
-ROR zp		$66	2	Zero-Page	5	N,Z,C		Rotate right zero-page
-RTI		$40	1	Implied		6	All		Return from interrupt
-RTS		$60	1	Implied		6	-		Return from subroutine
-SBC #val	$E9	2	Immediate	2	N,V,Z,C		Subtract with carry
-SBC zp		$E5	2	Zero-Page	3	N,V,Z,C		Subtract zero-page
-SBC abs		$ED	3	Absolute	4	N,V,Z,C		Subtract absolute
-SEC		$38	1	Implied		2	C		Set carry
-SED		$F8	1	Implied		2	-		Set decimal (unused)
-SEI		$78	1	Implied		2	I		Set interrupt disable
-STA zp		$85	2	Zero-Page	3	-		Store A zero-page
-STA abs		$8D	3	Absolute	4	-		Store A absolute
-STA zp,X	$95	2	Zero-Page,X	4	-		Store A zero-page,X
-STA abs,X	$9D	3	Absolute,X	5	-		Store A absolute,X
-STA abs,Y	$99	3	Absolute,Y	5	-		Store A absolute,Y
-STX zp		$86	2	Zero-Page	3	-		Store X zero-page
-STY zp		$84	2	Zero-Page	3	-		Store Y zero-page
-TAX		$AA	1	Implied		2	N,Z		Transfer A to X
-TAY		$A8	1	Implied		2	N,Z		Transfer A to Y
-TSX		$BA	1	Implied		2	N,Z		Transfer SP to X
-TXA		$8A	1	Implied		2	N,Z		Transfer X to A
-TXS		$9A	1	Implied		2	-		Transfer X to SP
-TYA		$98	1	Implied		2	N,Z		Transfer Y to A
-HLT		$02	1	Implied		-	-		Halt CPU until reset/interrupt
+Mnemonic	Opcode	Bytes	Mode		Cycles	Flags	Description
+ADC #val	$69	2	Immediate	2	N,V,Z,C	Add with carry
+ADC zp		$65	2	Zero-Page	3	N,V,Z,C	Add from zero-page
+ADC abs		$6D	3	Absolute	4	N,V,Z,C	Add from absolute
+AND #val	$29	2	Immediate	2	N,Z	Logical AND
+AND zp		$25	2	Zero-Page	3	N,Z	AND from zero-page
+AND abs		$2D	3	Absolute	4	N,Z	AND from absolute
+ASL A		$0A	1	Accumulator	2	N,Z,C	Shift left A
+ASL zp		$06	2	Zero-Page	5	N,Z,C	Shift left zero-page
+ASL abs		$0E	3	Absolute	6	N,Z,C	Shift left absolute
+BCC rel		$90	2	Relative	2/3*	-	Branch if C clear
+BCS rel		$B0	2	Relative	2/3*	-	Branch if C set
+BEQ rel		$F0	2	Relative	2/3*	-	Branch if Z set
+BIT zp		$24	2	Zero-Page	3	N,V,Z	Test bits
+BIT abs		$2C	3	Absolute	4	N,V,Z	Test bits
+BMI rel		$30	2	Relative	2/3*	-	Branch if N set
+BNE rel		$D0	2	Relative	2/3*	-	Branch if Z clear
+BPL rel		$10	2	Relative	2/3*	-	Branch if N clear
+BRK		$00	1	Implied		7	I	Software interrupt
+BVC rel		$50	2	Relative	2/3*	-	Branch if V clear
+BVS rel		$70	2	Relative	2/3*	-	Branch if V set
+CLC		$18	1	Implied		2	C	Clear carry
+CLD		$D8	1	Implied		2	-	Clear decimal (unused)
+CLI		$58	1	Implied		2	I	Clear interrupt disable
+CLV		$B8	1	Implied		2	V	Clear overflow
+CMP #val	$C9	2	Immediate	2	N,Z,C	Compare A
+CMP zp		$C5	2	Zero-Page	3	N,Z,C	Compare zero-page
+CMP abs		$CD	3	Absolute	4	N,Z,C	Compare absolute
+CPX #val	$E0	2	Immediate	2 Z,C	Compare	X
+CPX zp		$E4	2	Zero-Page	3	N,Z,C	Compare X zero-page
+CPY #val	$C0	2	Immediate	2	N,Z,C	Compare Y
+CPY zp		$C4	2	Zero-Page	3	N,Z,C	Compare Y zero-page
+DEC zp		$C6	2	Zero-Page	5	N,Z	Decrement zero-page
+DEC abs	$CE	3	Absolute	6	N,Z	Decrement absolute
+DEX		$CA	1	Implied		2	N,Z	Decrement X
+DEY		$88	1	Implied	2	N,Z	Decrement Y
+EOR #val	$49	2	Immediate	2	N,Z	Exclusive OR
+EOR zp		$45	2	EZero-Page	3 Z	Exclusive OR zero-page
+EOR abs		$4D	3	Absolute	4	N,Z	EOR absolute
+INC zp	$E6	2	Zero-Page	5	N,Z	Increment zero-page
+INC abs		$EE	3	Absolute	6	N,Z	Increment absolute
+INX		$E8	1	Implied		2	N,Z	Increment X
+INY		$C8	1	Implied		2	N,Z	Increment Y
+JMP abs		$4C	3	Absolute	3	-	Jump absolute
+JMP ind		$6C	3	Indirect	5	-	Jump indirect
+JSR abs		$20	3	Absolute	6	-	Jump to subroutine
+LDA #val	$A9	2	Immediate	2	N,Z	Load A immediate
+LDA zp		$A5	2	Zero-Page	3	N,Z	Load A zero-page
+LDA abs		$AD	3	Absolute	4	N,Z	Load A absolute
+LDA zp,X	$B5	2	Zero-Page,X	4	N,Z	Load A zero-page,X
+LDA abs,X	$BD	3	Absolute,X	4/5*	N,Z	Load A absolute,X
+LDA abs,Y	$B9	3	Absolute,Y	4/5*	N,Z	Load A absolute,Y
+LDX #val	$A2	2	Immediate	2	N,Z	Load X immediate
+LDX zp		$A6	2	Zero-Page	3	N,Z	Load X zero-page
+LDY #val	$A0	2	Immediate	2	N,Z	Load Y immediate
+LDY zp		$A4	2	Zero-Page	3	N,Z	Load Y zero-page
+LSR A		$4A	1	Accumulator	2	N,Z,C	Shift right A
+LSR zp		$46	2	Zero-Page	5	N,Z,C	Shift right zero-page
+LSR abs		$4E	3	Absolute	6	N,Z,C	Shift right absolute
+NOP		$EA	1	Implied		2	-	No operation
+ORA #val	$09	2	Immediate	2	N,Z	Logical OR
+ORA zp		$05	2	Zero-Page	3	N,Z	OR zero-page
+ORA abs		$0D	3	Absolute	4	N,Z	OR absolute
+PHA		$48	1	Implied		3	-	Push A to stack
+PHP		$08	1	Implied		3	-	Push F to stack
+PHX		$DA	1	Implied		3	-	Push X to stack
+PHY		$5A	1	Implied		3	-	Push Y to stack
+PLA		$68	1	Implied		4	N,Z	Pull A from stack
+PLP		$28	1	Implied		4	All	Pull F from stack
+PLX		$FA	1	Implied		4	N,Z	Pull X from stack
+PLY		$7A	1	Implied		4	N,Z	Pull Y from stack
+ROL A		$2A	1	Accumulator	2	N,Z,C	Rotate left A
+ROL zp		$26	2	Zero-Page	5	N,Z,C	Rotate left zero-page
+ROR A		$6A	1	Accumulator	2	N,Z,C	Rotate right A
+ROR zp		$66	2	Zero-Page	5	N,Z,C	Rotate right zero-page
+RTI		$40	1	Implied		6	All	Return from interrupt
+RTS		$60	1	Implied		6	-	Return from subroutine
+SBC #val	$E9	2	Immediate	2	N,V,Z,C	Subtract with carry
+SBC zp		$E5	2	Zero-Page	3	N,V,Z,C	Subtract zero-page
+SBC abs		$ED	3	Absolute	4	N,V,Z,C	Subtract absolute
+SEC		$38	1	Implied		2	C	Set carry
+SED		$F8	1	Implied		2	-	Set decimal (unused)
+SEI		$78	1	Implied		2	I	Set interrupt disable
+STA zp		$85	2	Zero-Page	3	-	Store A zero-page
+STA abs		$8D	3	Absolute	4	-	Store A absolute
+STA zp,X	$95	2	Zero-Page,X	4	-	Store A zero-page,X
+STA abs,X	$9D	3	Absolute,X	5	-	Store A absolute,X
+STA abs,Y	$99	3	Absolute,Y	5	-	Store A absolute,Y
+STX zp		$86	2	Zero-Page	3	-	Store X zero-page
+STY zp		$84	2	Zero-Page	3	-	Store Y zero-page
+TAX		$AA	1	Implied		2	N,Z	Transfer A to X
+TAY		$A8	1	Implied		2	N,Z	Transfer A to Y
+TSX		$BA	1	Implied		2	N,Z	Transfer SP to X
+TXA		$8A	1	Implied		2	N,Z	Transfer X to A
+TXS		$9A	1	Implied		2	-	Transfer X to SP
+TYA		$98	1	Implied		2	N,Z	Transfer Y to A
+HLT		$02	1	Implied		-	-	Halt CPU until reset/interrupt
 
 *Notes:
 - Branch taken: +1 cycle.
@@ -497,32 +497,32 @@ Behavior
 
 15. List of Special Registers
 
-Address		Name				Description				Access
-$00FE		PAGE_SELECT_REG			Page Select Register			R/W, Page 0
-$020000-$0200FF	Screen Bounding Offsets		Per-column bottom offset		R/W, Page 4
-$020100		VRAM_FLAGS_REG			VRAM Control Flags			R/W, Page 4
-$020101		VRAM_SCROLL_X_REG		Fine Scroll X				R/W, Page 4
-$020102		VRAM_SCROLL_Y_REG		Fine Scroll Y				R/W, Page 4
-$020200-$0205FF	Sprite Attribute Table		Sprite entries (4 bytes)		R/W, Page 4
-$020600		GAMEPAD1_STATE_REG		Gamepad 1 button states			Read-only, Page 4
-$020601		GAMEPAD2_STATE_REG		Gamepad 2 button states			Read-only, Page 4
-$020602		INPUT_STATUS_REG		Controller connection status		Read-only, Page 4
-$020700-$020713	Audio Channel Registers		Freq, Vol, Wave, Ctrl (4 chans)		R/W, Page 4
-$0207F0		AUDIO_MASTER_VOL_REG		Master Volume				R/W, Page 4
-$0207F1		AUDIO_SYSTEM_CTRL_REG		Audio System Enable			R/W, Page 4
-$020800		SCREEN_CTRL_REG			Display Control				R/W, Page 4
-$020810		PALETTE_ADDR_REG		Palette Index				Write-only, Page 4
-$020811		PALETTE_DATA_REG		Palette Color Data			Write-only, Page 4
-$020820		FRAME_COUNT_LO_REG		Frame Counter Low			Read-only, Page 4
-$020821		FRAME_COUNT_HI_REG		Frame Counter High			Read-only, Page 4
-$020830		RAND_NUM_REG			Random Number Generator			R/W, Page 4
-$020840		TEXT_CTRL_REG			Text Layer Control			R/W, Page 4
-$020850		VSYNC_STATUS_REG		VSync Status				Read-only, Page 4
-$020860		TIMER_CTRL_REG			Timer Control				R/W, Page 4
-$020870		INT_ENABLE_REG			Interrupt Enable			R/W, Page 4
-$020871		INT_STATUS_REG			Interrupt Status			Read-clear, Page 4
-$021000-$02177F	Text Character Map		32x30 text cells (2 bytes)		R/W, Page 5
-$021800-$021B7F	Tilemap				32x30 tilemap (2 bytes)			R/W, Page 5
+Address			Name				Description				Access
+$00FE			PAGE_SELECT_REG		Page Select Register			R/W, Page 0
+$020000-$0200FF		Screen Bounding Offsets	Per-column bottom offset		R/W, Page 4
+$020100			VRAM_FLAGS_REG		VRAM Control Flags			R/W, Page 4
+$020101			VRAM_SCROLL_X_REG	Fine Scroll X				R/W, Page 4
+$020102			VRAM_SCROLL_Y_REG	Fine Scroll Y				R/W, Page 4
+$020200-$0205FF		Sprite Attribute Table	Sprite entries (4 bytes)		R/W, Page 4
+$020600			GAMEPAD1_STATE_REG	Gamepad 1 button states			Read-only, Page 4
+$020601			GAMEPAD2_STATE_REG	Gamepad 2 button states			Read-only, Page 4
+$020602			INPUT_STATUS_REG	Controller connection status		Read-only, Page 4
+$020700-$020713		Audio Channel Registers	Freq, Vol, Wave, Ctrl (4 chans)		R/W, Page 4
+$0207F0			AUDIO_MASTER_VOL_REG	Master Volume				R/W, Page 4
+$0207F1			AUDIO_SYSTEM_CTRL_REG	Audio System Enable			R/W, Page 4
+$020800			SCREEN_CTRL_REG		Display Control				R/W, Page 4
+$020810			PALETTE_ADDR_REG	Palette Index				Write-only, Page 4
+$020811			PALETTE_DATA_REG	Palette Color Data			Write-only, Page 4
+$020820			FRAME_COUNT_LO_REG	Frame Counter Low			Read-only, Page 4
+$020821			FRAME_COUNT_HI_REG	Frame Counter High			Read-only, Page 4
+$020830			RAND_NUM_REG		Random Number Generator			R/W, Page 4
+$020840			TEXT_CTRL_REG		Text Layer Control			R/W, Page 4
+$020850			VSYNC_STATUS_REG	VSync Status				Read-only, Page 4
+$020860			TIMER_CTRL_REG		Timer Control				R/W, Page 4
+$020870			INT_ENABLE_REG		Interrupt Enable			R/W, Page 4
+$020871			INT_STATUS_REG		Interrupt Status			Read-clear, Page 4
+$021000-$02177F		Text Character Map	32x30 text cells (2 bytes)		R/W, Page 5
+$021800-$021B7F		Tilemap			32x30 tilemap (2 bytes)			R/W, Page 5
 
 ------------------------------------------------------------
 
