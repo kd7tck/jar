@@ -433,7 +433,7 @@ The FC-8 features a 4-channel sound system. Each channel is independent and can 
 *   Sawtooth wave
 *   Triangle wave
 *   Noise (white noise generator)
-One channel (e.g., Channel 4) can be used for simple Pulse-Code Modulation (PCM) sample playback. This is typically achieved by setting the channel to a continuous waveform (like a square wave or even just setting DC level via volume) and then rapidly updating its volume register (e.g., CH4_VOL_ENV_REG) with the PCM sample data at a fixed sampling rate. For example, a game might synchronize a timer (or use VBLANK intervals) to update CH4_VOL_ENV_REG with 4-bit or 8-bit sample values (scaled to the 0-15 volume range if necessary) thousands of times per second. This method is CPU-intensive as it requires frequent register writes.
+One channel (e.g., Channel 4) can be used for simple Pulse-Code Modulation (PCM) sample playback. This is typically achieved by setting the channel to a continuous waveform (like a square wave or even just setting DC level via volume) and then rapidly updating its volume register (e.g., CH4_VOL_ENV_REG) with the PCM sample data at a fixed sampling rate. For example, a game might synchronize a timer (or use VBLANK intervals) to update CH4_VOL_ENV_REG with 4-bit or 8-bit sample values (scaled to the 0-15 volume range if necessary) thousands of times per second. This method is CPU-intensive as it requires frequent register writes. For reasonable audio fidelity, these volume updates may need to occur at a high rate, potentially several kilohertz (kHz), depending on the desired sample rate of the PCM audio.
 
 ### Channel Registers:
 The following registers are memory-mapped. See Section 13: List Of Special Registers for a consolidated list of all special register addresses.
@@ -497,6 +497,14 @@ To stop a sound:
 *   Or, disable the channel using Bit 7 of its `CTRL` register.
 *   Setting both FREQ_LO and FREQ_HI registers for a channel to $0000 (effectively a frequency of 0) definitively silences that channel by disabling its sound generation capabilities, regardless of other register settings like volume or trigger state.
 *   Disabling the entire audio system via `AUDIO_SYSTEM_CTRL_REG` will mute all sounds.
+
+### 8.1 Supporting Software-Based Music Players (e.g., MOD/XM)
+The FC-8's 4-channel audio hardware is designed as a versatile target for software-based music players and trackers, such as those for MOD, XM, or similar formats. Software running on the FC-8's CPU is responsible for:
+    *   Parsing the specific music file format.
+    *   Implementing musical effects defined in the format (e.g., arpeggio, portamento, vibrato).
+    *   Mixing audio channels if the source format contains more than four channels, to fit the FC-8's hardware capabilities.
+    *   Driving the FC-8's hardware audio channels by writing appropriate values to their control registers (frequency, volume, waveform selection).
+    *   For sample-based music (common in MOD and XM), this typically involves using one or more hardware channels in a PCM (Pulse-Code Modulation) mode. This is achieved by continuously and rapidly updating the channel's volume register with the PCM sample data, as described in the PCM playback capability of the audio channels.
 
 ---
 ## 10. Sprite System
@@ -779,6 +787,7 @@ As noted in Section 5, the FC-8 CPU (including its fetch-decode-execute cycle an
 *   Registers for frequency, volume, waveform, and control will gate and shape the output of oscillators (for square, saw, triangle) or a Linear Feedback Shift Register (LFSR for noise).
 *   The outputs of the channels are typically mixed (summed) and then passed through a master volume control.
 *   For an FPGA, the final output might be a Pulse Width Modulated (PWM) signal that can be low-pass filtered externally to produce analog audio, or a direct digital audio stream (like I2S if an external DAC is used).
+*   It's important to note that while the hardware provides 4 independent channels with basic waveform generation, it is also designed to support more complex audio playback (like MOD or XM music) driven by software running on the FC-8's CPU. The software handles parsing, effects, and channel mixing, ultimately using the hardware channels for sound output, often via PCM. Refer to Section 8.1 for more details on this software-hardware interaction model.
 
 ### Input System
 *   The Gamepad State Register (`$0x20600`) is implemented as a set of flip-flops that latch the state of physical buttons connected to FPGA pins. Debouncing logic for button inputs is essential.
