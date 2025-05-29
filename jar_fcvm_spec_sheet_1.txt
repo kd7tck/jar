@@ -12,7 +12,7 @@ Table of Contents
 6. Clock, Timing, and Synchronization
 7. Input System
 8. Audio System
-9. VRAM and Tilemap System
+9. VRAM and Graphics System
 10. Sprite System
 11. Color Palette System
 12. Text Rendering System
@@ -31,74 +31,74 @@ Table of Contents
 1. Version History
 
 * v0.1.0 (Initial Draft): Document creation.
-* v0.2.0 (In Progress): Structural improvements, clarifications, additions. Converted to Markdown.
-* v0.3.0: Added Hex and FPGA info, cleaned up.
-* v0.4.0: Comprehensive update with interrupt handling, complete instruction set, tilemap support, detailed audio specs, error handling, enhanced input and text systems, precise timing, debugging tools, and community resources. Added versioning and compatibility strategy.
+* v0.2.0 (In Progress): Structural improvements, clarifications, and additions.
+* v0.3.0: Added hex editing and FPGA info, cleaned up document.
+* v0.4.0: Comprehensive update addressing all identified gaps. Added interrupt handling, complete instruction set, tilemap support, detailed audio specifications, error handling, enhanced input and text systems, precise timing, debugging tools, cartridge extensions, versioning strategy, example programs, and community resources. Ensures backward compatibility with v0.3.0 cartridges.
 
 ------------------------------------------------------------
 
 2. Introduction
 
-This document outlines the technical specifications for the FC-8 (Fantasy Machine), a virtual machine for retro-style game development. It details hardware architecture, memory organization, graphics, audio, input systems, interrupt handling, and error conditions, serving as a guide for developers creating games, emulators, or tools. The FC-8 targets hobbyists and students, supporting platformers, puzzlers, shooters, and text adventures. Community resources and tools are listed in Section 21.
+The FC-8 (Fantasy Console 8-bit) is a virtual machine designed for creating and playing retro-style video games, inspired by 8-bit consoles. This specification details its hardware architecture, memory organization, graphics, audio, input mechanisms, interrupt system, and error handling. It serves as a guide for developers building games, emulators, or development tools, targeting hobbyists, students, and retro game enthusiasts. Supported game genres include platformers, puzzlers, shoot 'em ups, and text adventures.
 
-The FC-8 balances retro aesthetics with modern usability. Version 0.4.0 ensures backward compatibility with v0.3.0 cartridges and adds features for enhanced functionality, making it developer-friendly for retro games.
+The FC-8 combines retro aesthetics with modern usability, offering a simple yet flexible platform. Version 0.4.0 enhances the original design with new features while maintaining compatibility with existing cartridges. Community forums, GitHub repositories, and tools support development (see Section 21).
 
 ------------------------------------------------------------
 
 3. Memory Layout
 
-The FC-8 uses a 1MB physical address space ($000000-$0FFFFF). The CPU operates with a 16-bit logical address space ($0000-$FFFF, 64 KiB), accessing the full 1MB via bank switching.
+The FC-8 has a 1MB physical address space ($000000-$0FFFFF). The CPU uses a 16-bit logical address space ($0000-$FFFF, 64 KiB), accessing the full 1MB via bank switching.
 
-CPU Logical Address Space & Memory Mapping
+CPU Logical Address Space
 * $0000-$7FFF (32 KiB): Fixed RAM Block. Maps to physical $000000-$007FFF:
-  - $0000-$00FD: Zero-page RAM (fast addressing).
+  - $0000-$00FD: Zero-page RAM (fast addressing mode).
   - $00FE: PAGE_SELECT_REG (8-bit, controls bank switching).
   - $00FF: Reserved zero-page location.
-  - $0100-$7FFF: Stack and general-purpose RAM. Stack Pointer (SP) starts at $0100, grows to $7FFF.
+  - $0100-$7FFF: Stack and general-purpose RAM. Stack Pointer (SP) starts at $0100, grows upward to $7FFF.
 * $8000-$FFFF (32 KiB): Paged Memory Window. Maps to one of 32 physical 32 KiB pages via PAGE_SELECT_REG.
 
-Bank Switching Mechanism
-* PAGE_SELECT_REG at $00FE:
-  - Bits 0-4 select one of 32 pages (0-31). Bits 5-7 reserved (write 0, read 0).
-  - Physical address for logical $8000-$FFFF: Physical = (PAGE_SELECT_REG[4:0] * 0x8000) + (Logical_Address - 0x8000).
+Bank Switching
+* PAGE_SELECT_REG ($00FE):
+  - Bits 0-4: Select one of 32 pages (0-31). Bits 5-7 reserved (write 0, read 0).
+  - Physical address: Physical = (PAGE_SELECT_REG[4:0] * 0x8000) + (Logical - 0x8000).
   - Example: PAGE_SELECT_REG[4:0] = 2, logical $8100 maps to physical $10100.
-  - If PAGE_SELECT=0, $8000-$FFFF aliases $000000-$007FFF.
+  - If PAGE_SELECT_REG=0, $8000-$FFFF aliases $000000-$007FFF.
 
-Physical Memory Allocation (1MB)
-* $000000-$007FFF (Page 0): Fixed RAM Block.
-* $008000-$00FFFF (Page 1): Reserved (e.g., save RAM).
+Physical Memory Allocation
+* $000000-$007FFF (Page 0): Fixed RAM Block (CPU $0000-$7FFF).
+* $008000-$00FFFF (Page 1): Reserved (e.g., battery-backed save RAM).
 * $010000-$017FFF (Page 2): VRAM (bitmap lines 0-127 or tilemap data).
 * $018000-$01FFFF (Page 3): VRAM (bitmap lines 128-255 or tile patterns).
 * $020000-$027FFF (Page 4): Special Function Registers (SFRs).
-* $028000-$02FFFF (Page 8): Additional SFRs (e.g., text character map, tilemap).
-* $030000-$0FFFFF (Pages 6-31): Cartridge ROM (832 KiB).
+* $028000-$02FFFF (Page 5): Additional SFRs (text character map, tilemap).
+* $030000-$0FFFFF (Pages 6-31): Cartridge ROM (832 KiB, code, assets).
 
 System State on Reset/Power-On
 * CPU Registers:
   - Program Counter (PC): Set to cartridge header's Program Entry Point (16-bit logical address). PAGE_SELECT_REG set to Initial Code Page Select.
-  - Stack Pointer (SP): $0100 (stack grows to $7FFF).
+  - Stack Pointer (SP): $0100 (stack grows to $7FFF, avoids zero-page overwrite).
   - Accumulator (A), Index X (X), Index Y (Y): $00.
   - Flag Register (F): $00 (N, V, Z, C, I cleared).
 * Memory and SFRs:
   - Fixed RAM ($0000-$7FFF): Initialized to $00.
   - VRAM ($010000-$01FFFF): Initialized to $00 (transparent/black).
-  - Text Character Map ($021000-$027FFF): Initialized to $00 (space character, transparent).
-  - Palette: Default 256-color palette (Section 11).
-  - PAGE_SELECT_REG ($00FE): Set to Initial Code Page Select or $00 if no cartridge.
-  - Other SFRs: See Section 15 for defaults.
-* No Cartridge: If invalid magic number, PC set to $0000 (halt loop: JMP $0000). Text layer may display "No Cartridge".
+  - Text Character Map ($021000-$02177F): Initialized to $00 (space, transparent background).
+  - Palette: Default 256-color palette (Section 11, Appendix for values).
+  - PAGE_SELECT_REG ($00FE): Set to cartridge header’s Initial Code Page Select or $00 if no cartridge.
+  - SFRs: Default values per Section 15 (e.g., SCREEN_CTRL_REG = $00, display off).
+* No Cartridge: If magic number invalid, PC set to $0000 (halt loop: JMP $0000). Text layer may display "No Cartridge" if initialized.
 
 ------------------------------------------------------------
 
 4. Cartridge Format
 
-Cartridge data resides in physical $030000-$0FFFFF (832 KiB), containing code, graphics, sound, and metadata.
+Cartridge data occupies physical $030000-$0FFFFF (832 KiB), storing game code, graphics, sound, and metadata.
 
 Cartridge Header
 First 256 bytes ($030000-$0300FF), Little Endian.
 
 Header Fields
-* $030000-$030003 (4 bytes): Magic number ("FC8C" ASCII, validates cartridge).
+* $030000-$030003 (4 bytes): Magic Number ("FC8C" ASCII, validates cartridge).
 * $030004-$030023 (32 bytes): Game Title (null-terminated ASCII, max 31 chars + null).
 * $030024-$030025 (2 bytes): Game Version (byte 0: major, byte 1: minor).
 * $030026-$030027 (2 bytes): Program Entry Point (16-bit logical address, typically $8000-$FFFF).
@@ -113,21 +113,25 @@ Header Fields
 * $030038 (1 byte): Initial Code Page Select (bits 0-4 set PAGE_SELECT_REG, bits 5-7 zero).
 * $030039 (1 byte): Minimum VM Version (e.g., $04 for v0.4.0).
 * $03003A (1 byte): Region Code ($00=universal, $01=NTSC, $02=PAL).
-* $03003B-$0300F9 (191 bytes): Reserved (zeros).
+* $03003B-$0300F9 (191 bytes): Reserved (write zeros, ignore on read).
 * $0300FA-$0300FB (2 bytes): Checksum (16-bit CRC of $030000-$0FFFFF, excluding this field).
 * $0300FC-$0300FF (4 bytes): Save RAM Size (32-bit, bytes, for $008000-$00FFFF).
 
 Data Sections
-- Program Code: FC-8 machine code, executed from Program Entry Point.
-- Sprite Data: 16x16 pixel sprites, 256 bytes each, 8-bit color indices.
-- Sound/Music Data: Waveform parameters, music sequences, or PCM samples.
-- Map Data: Tilemaps or level layouts for VRAM.
+* Program Code: FC-8 machine code, executed from Program Entry Point.
+* Sprite Data: 16x16 pixel sprites, 256 bytes each, 8-bit color indices.
+* Sound/Music Data: Waveform parameters, music sequences, or PCM samples.
+* Map Data: Tilemaps or level layouts for VRAM.
 
 Loading Process
-1. Read header at $030000, validate "FC8C" and checksum.
-2. If invalid, halt at $0000 or display "Invalid Cartridge" on text layer.
-3. Set PAGE_SELECT_REG to Initial Code Page Select, PC to Program Entry Point.
-4. Game code manages assets via bank switching.
+1. VM reads header at $030000, validates "FC8C" and checksum.
+2. If invalid, halts at $0000 or displays "Invalid Cartridge" on text layer.
+3. Sets PAGE_SELECT_REG to Initial Code Page Select, PC to Program Entry Point.
+4. Game code manages asset access via bank switching.
+
+Versioning and Compatibility
+* Cartridges specify Minimum VM Version ($030039). VM v0.4.0 runs v0.3.0 cartridges.
+* Reserved fields/bits ignored by older VMs, ensuring forward compatibility.
 
 ------------------------------------------------------------
 
@@ -141,125 +145,125 @@ Overall Design
 
 Registers
 * Program Counter (PC): 16-bit, logical address of next instruction.
-* Stack Pointer (SP): 16-bit, ascending stack in $0100-$7FFF, starts at $0100.
-* Accumulator (A): 8-bit, for arithmetic/logic.
+* Stack Pointer (SP): 16-bit, ascending stack in $0100-$7FFF, initialized to $0100.
+* Accumulator (A): 8-bit, for arithmetic and logic operations.
 * Index X (X), Y (Y): 8-bit, for indexed addressing.
 * Flag Register (F): 8-bit:
   - Bit 7: N (Negative)
   - Bit 6: V (Overflow)
-  - Bit 5: I (Interrupt Disable, 1 = disabled)
+  - Bit 5: I (Interrupt Disable, 1=disabled)
   - Bit 4: - (Unused, read 0)
   - Bit 3: - (Unused, read 0)
   - Bit 2: - (Unused, read 0)
   - Bit 1: Z (Zero)
   - Bit 0: C (Carry)
-* PAGE_SELECT_REG ($00FE): 8-bit, selects page for $8000-$FFFF.
+* PAGE_SELECT_REG ($00FE): 8-bit, selects physical page for $8000-$FFFF.
 
 Instruction Set Architecture (ISA)
-Instructions are 1-3 bytes: opcode + operands.
+Instructions are 1-3 bytes: opcode + optional operands. The original partial opcode table is expanded to include all instructions.
 
 Complete Opcode Table
-Mnemonic	Opcode	Bytes	Mode		Cycles	Flags	Description
-ADC #val	$69	2	Immediate	2	N,V,Z,C	Add with carry
-ADC zp		$65	2	Zero-Page	3	N,V,Z,C	Add from zero-page
-ADC abs		$6D	3	Absolute	4	N,V,Z,C	Add from absolute
-AND #val	$29	2	Immediate	2	N,Z	Logical AND
-AND zp		$25	2	Zero-Page	3	N,Z	AND from zero-page
-AND abs		$2D	3	Absolute	4	N,Z	AND from absolute
-ASL A		$0A	1	Accumulator	2	N,Z,C	Shift left A
-ASL zp		$06	2	Zero-Page	5	N,Z,C	Shift left zero-page
-ASL abs		$0E	3	Absolute	6	N,Z,C	Shift left absolute
-BCC rel		$90	2	Relative	2/3*	-	Branch if C clear
-BCS rel		$B0	2	Relative	2/3*	-	Branch if C set
-BEQ rel		$F0	2	Relative	2/3*	-	Branch if Z set
-BIT zp		$24	2	Zero-Page	3	N,V,Z	Test bits
-BIT abs		$2C	3	Absolute	4	N,V,Z	Test bits
-BMI rel		$30	2	Relative	2/3*	-	Branch if N set
-BNE rel		$D0	2	Relative	2/3*	-	Branch if Z clear
-BPL rel		$10	2	Relative	2/3*	-	Branch if N clear
-BRK		$00	1	Implied		7	I	Software interrupt
-BVC rel		$50	2	Relative	2/3*	-	Branch if V clear
-BVS rel		$70	2	Relative	2/3*	-	Branch if V set
-CLC		$18	1	Implied		2	C	Clear carry
-CLD		$D8	1	Implied		2	-	Clear decimal (unused)
-CLI		$58	1	Implied		2	I	Clear interrupt disable
-CLV		$B8	1	Implied		2	V	Clear overflow
-CMP #val	$C9	2	Immediate	2	N,Z,C	Compare A
-CMP zp		$C5	2	Zero-Page	3	N,Z,C	Compare zero-page
-CMP abs		$CD	3	Absolute	4	N,Z,C	Compare absolute
-CPX #val	$E0	2	Immediate	2 Z,C	Compare	X
-CPX zp		$E4	2	Zero-Page	3	N,Z,C	Compare X zero-page
-CPY #val	$C0	2	Immediate	2	N,Z,C	Compare Y
-CPY zp		$C4	2	Zero-Page	3	N,Z,C	Compare Y zero-page
-DEC zp		$C6	2	Zero-Page	5	N,Z	Decrement zero-page
-DEC abs	$CE	3	Absolute	6	N,Z	Decrement absolute
-DEX		$CA	1	Implied		2	N,Z	Decrement X
-DEY		$88	1	Implied	2	N,Z	Decrement Y
-EOR #val	$49	2	Immediate	2	N,Z	Exclusive OR
-EOR zp		$45	2	EZero-Page	3 Z	Exclusive OR zero-page
-EOR abs		$4D	3	Absolute	4	N,Z	EOR absolute
-INC zp	$E6	2	Zero-Page	5	N,Z	Increment zero-page
-INC abs		$EE	3	Absolute	6	N,Z	Increment absolute
-INX		$E8	1	Implied		2	N,Z	Increment X
-INY		$C8	1	Implied		2	N,Z	Increment Y
-JMP abs		$4C	3	Absolute	3	-	Jump absolute
-JMP ind		$6C	3	Indirect	5	-	Jump indirect
-JSR abs		$20	3	Absolute	6	-	Jump to subroutine
-LDA #val	$A9	2	Immediate	2	N,Z	Load A immediate
-LDA zp		$A5	2	Zero-Page	3	N,Z	Load A zero-page
-LDA abs		$AD	3	Absolute	4	N,Z	Load A absolute
-LDA zp,X	$B5	2	Zero-Page,X	4	N,Z	Load A zero-page,X
-LDA abs,X	$BD	3	Absolute,X	4/5*	N,Z	Load A absolute,X
-LDA abs,Y	$B9	3	Absolute,Y	4/5*	N,Z	Load A absolute,Y
-LDX #val	$A2	2	Immediate	2	N,Z	Load X immediate
-LDX zp		$A6	2	Zero-Page	3	N,Z	Load X zero-page
-LDY #val	$A0	2	Immediate	2	N,Z	Load Y immediate
-LDY zp		$A4	2	Zero-Page	3	N,Z	Load Y zero-page
-LSR A		$4A	1	Accumulator	2	N,Z,C	Shift right A
-LSR zp		$46	2	Zero-Page	5	N,Z,C	Shift right zero-page
-LSR abs		$4E	3	Absolute	6	N,Z,C	Shift right absolute
-NOP		$EA	1	Implied		2	-	No operation
-ORA #val	$09	2	Immediate	2	N,Z	Logical OR
-ORA zp		$05	2	Zero-Page	3	N,Z	OR zero-page
-ORA abs		$0D	3	Absolute	4	N,Z	OR absolute
-PHA		$48	1	Implied		3	-	Push A to stack
-PHP		$08	1	Implied		3	-	Push F to stack
-PHX		$DA	1	Implied		3	-	Push X to stack
-PHY		$5A	1	Implied		3	-	Push Y to stack
-PLA		$68	1	Implied		4	N,Z	Pull A from stack
-PLP		$28	1	Implied		4	All	Pull F from stack
-PLX		$FA	1	Implied		4	N,Z	Pull X from stack
-PLY		$7A	1	Implied		4	N,Z	Pull Y from stack
-ROL A		$2A	1	Accumulator	2	N,Z,C	Rotate left A
-ROL zp		$26	2	Zero-Page	5	N,Z,C	Rotate left zero-page
-ROR A		$6A	1	Accumulator	2	N,Z,C	Rotate right A
-ROR zp		$66	2	Zero-Page	5	N,Z,C	Rotate right zero-page
-RTI		$40	1	Implied		6	All	Return from interrupt
-RTS		$60	1	Implied		6	-	Return from subroutine
-SBC #val	$E9	2	Immediate	2	N,V,Z,C	Subtract with carry
-SBC zp		$E5	2	Zero-Page	3	N,V,Z,C	Subtract zero-page
-SBC abs		$ED	3	Absolute	4	N,V,Z,C	Subtract absolute
-SEC		$38	1	Implied		2	C	Set carry
-SED		$F8	1	Implied		2	-	Set decimal (unused)
-SEI		$78	1	Implied		2	I	Set interrupt disable
-STA zp		$85	2	Zero-Page	3	-	Store A zero-page
-STA abs		$8D	3	Absolute	4	-	Store A absolute
-STA zp,X	$95	2	Zero-Page,X	4	-	Store A zero-page,X
-STA abs,X	$9D	3	Absolute,X	5	-	Store A absolute,X
-STA abs,Y	$99	3	Absolute,Y	5	-	Store A absolute,Y
-STX zp		$86	2	Zero-Page	3	-	Store X zero-page
-STY zp		$84	2	Zero-Page	3	-	Store Y zero-page
-TAX		$AA	1	Implied		2	N,Z	Transfer A to X
-TAY		$A8	1	Implied		2	N,Z	Transfer A to Y
-TSX		$BA	1	Implied		2	N,Z	Transfer SP to X
-TXA		$8A	1	Implied		2	N,Z	Transfer X to A
-TXS		$9A	1	Implied		2	-	Transfer X to SP
-TYA		$98	1	Implied		2	N,Z	Transfer Y to A
-HLT		$02	1	Implied		-	-	Halt CPU until reset/interrupt
+Mnemonic	Opcode	Bytes	Mode		Cycles	Flags		Description
+ADC #val	$69	2	Immediate	2	N,V,Z,C		Add with carry
+ADC zp		$65	2	Zero-Page	3	N,V,Z,C		Add from zero-page
+ADC abs		$6D	3	Absolute	4	N,V,Z,C		Add from absolute
+AND #val	$29	2	Immediate	2	N,Z		Logical AND
+AND zp		$25	2	Zero-Page	3	N,Z		AND from zero-page
+AND abs		$2D	3	Absolute	4	N,Z		AND from absolute
+ASL A		$0A	1	Accumulator	2	N,Z,C		Shift left A
+ASL zp		$06	2	Zero-Page	5	N,Z,C		Shift left zero-page
+ASL abs		$0E	3	Absolute	6	N,Z,C		Shift left absolute
+BCC rel		$90	2	Relative	2/3*	-		Branch if C clear
+BCS rel		$B0	2	Relative	2/3*	-		Branch if C set
+BEQ rel		$F0	2	Relative	2/3*	-		Branch if Z set
+BIT zp		$24	2	Zero-Page	3	N,V,Z		Test bits
+BIT abs		$2C	3	Absolute	4	N,V,Z		Test bits
+BMI rel		$30	2	Relative	2/3*	-		Branch if N set
+BNE rel		$D0	2	Relative	2/3*	-		Branch if Z clear
+BPL rel		$10	2	Relative	2/3*	-		Branch if N clear
+BRK		$00	1	Implied		7	I		Software interrupt
+BVC rel		$50	2	Relative	2/3*	-		Branch if V clear
+BVS rel		$70	2	Relative	2/3*	-		Branch if V set
+CLC		$18	1	Implied		2	C		Clear carry
+CLD		$D8	1	Implied		2	-		Clear decimal (unused)
+CLI		$58	1	Implied		2	I		Clear interrupt disable
+CLV		$B8	1	Implied		2	V		Clear overflow
+CMP #val	$C9	2	Immediate	2	N,Z,C		Compare A
+CMP zp		$C5	2	Zero-Page	3	N,Z,C		Compare zero-page
+CMP abs		$CD	3	Absolute	4	N,Z,C		Compare absolute
+CPX #val	$E0	2	Immediate	2	N,Z,C		Compare X
+CPX zp		$E4	2	Zero-Page	3	N,Z,C		Compare X zero-page
+CPY #val	$C0	2	Immediate	2	N,Z,C		Compare Y
+CPY zp		$C4	2	Zero-Page	3	N,Z,C		Compare Y zero-page
+DEC zp		$C6	2	Zero-Page	5	N,Z		Decrement zero-page
+DEC abs		$CE	3	Absolute	6	N,Z		Decrement absolute
+DEX		$CA	1	Implied		2	N,Z		Decrement X
+DEY		$88	1	Implied		2	N,Z		Decrement Y
+EOR #val	$49	2	Immediate	2	N,Z		Exclusive OR
+EOR zp		$45	2	Zero-Page	3	N,Z		EOR zero-page
+EOR abs		$4D	3	Absolute	4	N,Z		EOR absolute
+INC zp		$E6	2	Zero-Page	5	N,Z		Increment zero-page
+INC abs		$EE	3	Absolute	6	N,Z		Increment absolute
+INX		$E8	1	Implied		2	N,Z		Increment X
+INY		$C8	1	Implied		2	N,Z		Increment Y
+JMP abs		$4C	3	Absolute	3	-		Jump absolute
+JMP ind		$6C	3	Indirect	5	-		Jump indirect
+JSR abs		$20	3	Absolute	6	-		Jump to subroutine
+LDA #val	$A9	2	Immediate	2	N,Z		Load A immediate
+LDA zp		$A5	2	Zero-Page	3	N,Z		Load A zero-page
+LDA abs		$AD	3	Absolute	4	N,Z		Load A absolute
+LDA zp,X	$B5	2	Zero-Page,X	4	N,Z		Load A zero-page,X
+LDA abs,X	$BD	3	Absolute,X	4/5*	N,Z		Load A absolute,X
+LDA abs,Y	$B9	3	Absolute,Y	4/5*	N,Z		Load A absolute,Y
+LDX #val	$A2	2	Immediate	2	N,Z		Load X immediate
+LDX zp		$A6	2	Zero-Page	3	N,Z		Load X zero-page
+LDY #val	$A0	2	Immediate	2	N,Z		Load Y immediate
+LDY zp		$A4	2	Zero-Page	3	N,Z		Load Y zero-page
+LSR A		$4A	1	Accumulator	2	N,Z,C		Shift right A
+LSR zp		$46	2	Zero-Page	5	N,Z,C		Shift right zero-page
+LSR abs		$4E	3	Absolute	6	N,Z,C		Shift right absolute
+NOP		$EA	1	Implied		2	-		No operation
+ORA #val	$09	2	Immediate	2	N,Z		Logical OR
+ORA zp		$05	2	Zero-Page	3	N,Z		OR zero-page
+ORA abs		$0D	3	Absolute	4	N,Z		OR absolute
+PHA		$48	1	Implied		3	-		Push A to stack
+PHP		$08	1	Implied		3	-		Push F to stack
+PHX		$DA	1	Implied		3	-		Push X to stack
+PHY		$5A	1	Implied		3	-		Push Y to stack
+PLA		$68	1	Implied		4	N,Z		Pull A from stack
+PLP		$28	1	Implied		4	All		Pull F from stack
+PLX		$FA	1	Implied		4	N,Z		Pull X from stack
+PLY		$7A	1	Implied		4	N,Z		Pull Y from stack
+ROL A		$2A	1	Accumulator	2	N,Z,C		Rotate left A
+ROL zp		$26	2	Zero-Page	5	N,Z,C		Rotate left zero-page
+ROR A		$6A	1	Accumulator	2	N,Z,C		Rotate right A
+ROR zp		$66	2	Zero-Page	5	N,Z,C		Rotate right zero-page
+RTI		$40	1	Implied		6	All		Return from interrupt
+RTS		$60	1	Implied		6	-		Return from subroutine
+SBC #val	$E9	2	Immediate	2	N,V,Z,C		Subtract with carry
+SBC zp		$E5	2	Zero-Page	3	N,V,Z,C		Subtract zero-page
+SBC abs		$ED	3	Absolute	4	N,V,Z,C		Subtract absolute
+SEC		$38	1	Implied		2	C		Set carry
+SED		$F8	1	Implied		2	-		Set decimal (unused)
+SEI		$78	1	Implied		2	I		Set interrupt disable
+STA zp		$85	2	Zero-Page	3	-		Store A zero-page
+STA abs		$8D	3	Absolute	4	-		Store A absolute
+STA zp,X	$95	2	Zero-Page,X	4	-		Store A zero-page,X
+STA abs,X	$9D	3	Absolute,X	5	-		Store A absolute,X
+STA abs,Y	$99	3	Absolute,Y	5	-		Store A absolute,Y
+STX zp		$86	2	Zero-Page	3	-		Store X zero-page
+STY zp		$84	2	Zero-Page	3	-		Store Y zero-page
+TAX		$AA	1	Implied		2	N,Z		Transfer A to X
+TAY		$A8	1	Implied		2	N,Z		Transfer A to Y
+TSX		$BA	1	Implied		2	N,Z		Transfer SP to X
+TXA		$8A	1	Implied		2	N,Z		Transfer X to A
+TXS		$9A	1	Implied		2	-		Transfer X to SP
+TYA		$98	1	Implied		2	N,Z		Transfer Y to A
+HLT		$02	1	Implied		-	-		Halt CPU until reset/interrupt
 
 *Notes:
-- Branch taken: +1 cycle.
-- Indexed addressing: +1 cycle if page boundary crossed.
+- *Branch taken: +1 cycle.
+- *Indexed addressing: +1 cycle if page boundary crossed.
 - Undefined opcodes: Treated as NOP (2 cycles).
 
 Addressing Modes
@@ -289,22 +293,30 @@ Frame Rate
 * Cycles per Scanline: 83,333 / 262 ~ 318 cycles.
 * VBLANK Duration: 22 scanlines ~ 6,996 cycles.
 
-Synchronization
+Synchronization Registers
 * $020850 - VSYNC_STATUS_REG (Read-only):
   - Bit 0: IN_VBLANK (1 during VBLANK).
   - Bit 1: NEW_FRAME (set at VBLANK start, clears on read).
-* $020820-$020821 - FRAME_COUNT_LO/HI_REG (Read-only): 16-bit frame counter, increments at VBLANK, wraps at $FFFF.
+  - Bits 2-7: Reserved (read 0).
+* $020820-$020821 - FRAME_COUNT_LO/HI_REG (Read-only): 16-bit frame counter, increments at VBLANK start, wraps at $FFFF.
 * $020830 - RAND_NUM_REG (R/W): 8-bit LFSR-based PRNG, re-seeded on write.
 * $020800 - SCREEN_CTRL_REG (R/W):
   - Bit 0: Display Enable (1=on).
   - Bit 1: Mode (0=256x240, 1=256x256).
-  - Bits 2-7: Reserved (write 0).
+  - Bits 2-7: Reserved (write 0, read 0).
+
+Memory Access Timing
+* Zero-Page: 3 cycles (read/write).
+* Absolute: 4 cycles (read), 5 cycles (write).
+* Indexed: +1 cycle if page boundary crossed.
+* Cartridge ROM: 4 cycles (read-only).
+* VRAM: 4 cycles (read/write, recommend VBLANK access).
 
 Game Loop
 1. Poll VSYNC_STATUS_REG for IN_VBLANK or NEW_FRAME.
 2. Read inputs from GAMEPAD_STATE_REG.
 3. Update game logic (positions, scores, AI).
-4. Update VRAM, sprites, text, palette during VBLANK.
+4. Update VRAM, sprites, text, and palette during VBLANK.
 5. Repeat.
 
 ------------------------------------------------------------
@@ -327,216 +339,289 @@ Input Registers
   - Bit 5: B
   - Bit 6: Start
   - Bit 7: Select
-* $020601 - GAMEPAD2_STATE_REG (Read-only): Same as above for second gamepad.
+* $020601 - GAMEPAD2_STATE_REG (Read-only): Same as GAMEPAD1_STATE_REG for second gamepad.
 * $020602 - INPUT_STATUS_REG (Read-only):
   - Bit 0: Gamepad 1 connected (1=yes).
   - Bit 1: Gamepad 2 connected (1=yes).
   - Bits 2-7: Reserved (read 0).
 
 Reading Inputs
-* Read once per frame during VBLANK for consistency.
-* Hardware debouncing ensures stable states (10ms latency).
+* Read once per frame during VBLANK to avoid glitches.
+* Hardware debouncing ensures stable button states (10ms latency).
+* Edge detection via External Interrupt (Section 13) for button press/release events.
 
 ------------------------------------------------------------
 
 8. Audio System
 
 Capabilities
-* Channels: 4 independent (square, sawtooth, triangle, noise).
+* Channels: 4 independent channels (square, sawtooth, triangle, noise).
 * PCM Playback: Channel 4 supports PCM via volume modulation (8 kHz recommended).
+* Envelope: Linear decay envelope per channel.
 
-Channel Registers
-* Channel 1 ($020700-$020704):
-  - CH1_FREQ_LO/HI_REG: 16-bit frequency (Hz = 1,000,000 / (value + 1)).
-  - CH1_VOL_ENV_REG: Bits 7-4: Volume (0-15), Bit 3: Envelope Enable, Bits 2-0: Envelope Rate (0-7, slow to fast).
-  - CH1_WAVE_DUTY_REG: Bits 7-6: Waveform (00=Square, 01=Saw, 10=Triangle, 11=Noise), Bits 5-4: Square Duty (00=12.5%, 01=25%, 10=50%, 11=75%).
-  - CH1_CTRL_REG: Bit 0: Trigger (1=start, auto-clears), Bit 7: Enable (1=on).
+Channel Registers (per channel, e.g., Channel 1 at $020700-$020704)
+* CH1_FREQ_LO/HI_REG: 16-bit frequency (Hz = 1,000,000 / (value + 1)).
+* CH1_VOL_ENV_REG:
+  - Bits 7-4: Volume (0-15).
+  - Bit 3: Envelope Enable (1=on).
+  - Bits 2-0: Envelope Rate (0-7, 0=slowest, 7=fastest).
+* CH1_WAVE_DUTY_REG:
+  - Bits 7-6: Waveform (00=Square, 01=Saw, 10=Triangle, 11=Noise).
+  - Bits 5-4: Square Duty (00=12.5%, 01=25%, 10=50%, 11=75%).
+  - Bits 3-0: Reserved (write 0).
+* CH1_CTRL_REG:
+  - Bit 0: Trigger (1=start sound, auto-clears).
+  - Bit 7: Enable (1=on).
+  - Bits 1-6: Reserved (write 0).
 * Channels 2-4 ($020705-$020713): Identical structure.
 
 Global Registers
-* $0207F0 - AUDIO_MASTER_VOL_REG: Bits 2-0: Volume (0-7).
-* $0207F1 - AUDIO_SYSTEM_CTRL_REG: Bit 0: Enable (1=on).
+* $0207F0 - AUDIO_MASTER_VOL_REG (R/W):
+  - Bits 2-0: Master Volume (0-7, 0=mute).
+  - Bits 3-7: Reserved (write 0).
+* $0207F1 - AUDIO_SYSTEM_CTRL_REG (R/W):
+  - Bit 0: Audio System Enable (1=on).
+  - Bits 1-7: Reserved (write 0).
 
 PCM Playback (Channel 4)
-* Set CH4_WAVE_DUTY_REG to square, 50% duty.
-* Update CH4_VOL_ENV_REG with 4-bit samples at 8 kHz (every 625 cycles).
-* Synchronize updates via VBLANK or timer interrupt.
+* Configure: Set CH4_WAVE_DUTY_REG to square, 50% duty (Bits 7-6=00, Bits 5-4=10).
+* Operation: Update CH4_VOL_ENV_REG (Bits 7-4) with 4-bit samples at 8 kHz (every 625 cycles at 5MHz).
+* Timing: Synchronize updates via VBLANK or timer interrupt to avoid glitches.
+* Limitation: Maximum update rate ~16 kHz due to CPU speed.
 
 Envelope Functionality
-* If enabled (Bit 3=1), volume decreases linearly based on rate (Bits 2-0).
-* Rate 0 = slowest decay (256 frames), 7 = fastest (8 frames).
+* When enabled (Bit 3=1 in VOL_ENV_REG), volume decreases linearly.
+* Rate (Bits 2-0): 0 = 256 frames decay, 7 = 8 frames decay.
+* Trigger (CH_CTRL_REG Bit 0=1) resets envelope.
 
 Noise Generator
-* 16-bit LFSR, period controlled by frequency registers.
+* Channel 4 noise uses 16-bit LFSR.
+* Frequency registers control shift rate (lower value = faster noise).
+* Polynomial: x^16 + x^14 + x^13 + x^11 + 1.
 
 ------------------------------------------------------------
 
-9. VRAM and Tilemap System
+9. VRAM and Graphics System
 
 VRAM Overview
 * Size: 64 KiB ($010000-$01FFFF).
-* Access: Bank switching (Pages 2-3, PAGE_SELECT_REG = 2/3).
+* Access: Via bank switching (Pages 2-3, PAGE_SELECT_REG = 2 or 3).
 * Modes: Bitmap (256x256, 8-bit color) or Tilemap (32x30 tiles, 8x8 pixels).
 
 Bitmap Mode
-* 256x256 pixels, 8-bit color index.
-* Physical address: $010000 + (y * 256) + x.
-* Logical access: PAGE_SELECT_REG = 2 ($010000-$017FFF) or 3 ($018000-$01FFFF).
+* Resolution: 256x256 pixels, each an 8-bit color index (references palette).
+* Memory Layout: Physical address = $010000 + (y * 256) + x.
+* Access: Set PAGE_SELECT_REG to 2 ($010000-$017FFF) or 3 ($018000-$01FFFF).
+* Writes: Allowed anytime, but non-VBLANK writes may cause visual artifacts.
 
 Tilemap Mode
-* Tilemap: 32x30 grid ($021800-$021B7F, Page 5).
-  - Entry (2 bytes): Byte 0 = Tile ID (0-255), Byte 1 = Attributes (Bits 0-3: Palette, Bit 4: Flip-X, Bit 5: Flip-Y).
-* Tile Patterns: VRAM ($018000-$01FFFF, 256 bytes/tile).
-* Rendering: Hardware maps tile IDs to patterns, applies attributes.
+* Tilemap: 32x30 grid at $021800-$021B7F (Page 5).
+  - Each entry (2 bytes):
+    - Byte 0: Tile ID (0-255).
+    - Byte 1: Attributes (Bits 0-3: Palette index, Bit 4: Flip-X, Bit 5: Flip-Y, Bits 6-7: Reserved).
+* Tile Patterns: Stored in VRAM ($018000-$01FFFF), 256 bytes per 8x8 tile.
+* Rendering: Hardware maps tile IDs to patterns, applies attributes and palette.
 
 Scrolling
-* $020101 - VRAM_SCROLL_X_REG: 8-bit fine horizontal scroll.
-* $020102 - VRAM_SCROLL_Y_REG: 8-bit fine vertical scroll.
-* $020100 - VRAM_FLAGS_REG:
-  - Bit 0: Mirror-X
-  - Bit 1: Mirror-Y
-  - Bit 2: Flip-X
-  - Bit 3: Flip-Y
-  - Bits 4-7: Coarse Y Offset (-8 to +7, *16 lines).
+* $020101 - VRAM_SCROLL_X_REG (R/W): 8-bit fine horizontal scroll (0-255 pixels).
+* $020102 - VRAM_SCROLL_Y_REG (R/W): 8-bit fine vertical scroll (0-255 pixels).
+* $020100 - VRAM_FLAGS_REG (R/W):
+  - Bit 0: Mirror-X (repeats horizontally).
+  - Bit 1: Mirror-Y (repeats vertically).
+  - Bit 2: Flip-X (inverts horizontally).
+  - Bit 3: Flip-Y (inverts vertically).
+  - Bits 4-7: Coarse Y Offset (-8 to +7, multiplied by 16 lines).
+  - Bits 8-15: Reserved (write 0).
 
 Screen Bounding Bottom Effect
-* $020000-$0200FF: Per-column vertical offset (0-255) for bottom boundary.
+* $020000-$0200FF (Page 4): 256 bytes, one per column, vertical offset (0-255 pixels) for bottom boundary effect.
+
+Graphics Mode Selection
+* Controlled via SCREEN_CTRL_REG ($020800, Bit 1):
+  - 0: Bitmap mode (256x240 or 256x256).
+  - 1: Tilemap mode (256x240, 32x30 tiles).
 
 ------------------------------------------------------------
 
 10. Sprite System
 
 Sprite Definition
-* Size: 16x16 pixels, 8-bit color index.
+* Size: 16x16 pixels, 8-bit color index per pixel.
 * Transparency: Color index $00 is transparent.
-* Storage: Cartridge ROM ($030000-$0FFFFF), 256 bytes/sprite.
+* Storage: Cartridge ROM ($030000-$0FFFFF), 256 bytes per sprite.
 
 Sprite Attribute Table
-* $020200-$0205FF: 256 entries, 4 bytes each:
+* $020200-$0205FF (Page 4): 256 entries, 4 bytes each:
   - Byte 0: Sprite ID (0-255, $FF=disabled).
-  - Byte 1: X-Position (0-255).
-  - Byte 2: Y-Position (0-255).
-  - Byte 3: Attributes (Bit 0: Flip-X, Bit 1: Flip-Y, Bit 2: Priority).
+  - Byte 1: X-Position (0-255, 0=left edge).
+  - Byte 2: Y-Position (0-255, 0=top edge).
+  - Byte 3: Attributes:
+    - Bit 0: Flip-X (horizontal flip).
+    - Bit 1: Flip-Y (vertical flip).
+    - Bit 2: Priority (0=behind VRAM, 1=in front).
+    - Bits 3-7: Reserved (write 0).
 
 Rendering
-* Limits: 64 sprites on-screen, 8 per scanline (lower IDs prioritized).
-* Priority: Normal (0)=behind non-transparent VRAM, High (1)=in front.
+* Limits: Up to 64 sprites on-screen, 8 per scanline (lower Sprite IDs prioritized).
+* Priority: Normal (Bit 2=0) renders behind non-transparent VRAM pixels; High (Bit 2=1) renders in front.
+* Clipping: Sprites outside 256x240/256x256 screen are not rendered.
 
 ------------------------------------------------------------
 
 11. Color Palette System
 
 Format
-* 256 colors, R3G3B2 (3-bit Red, 3-bit Green, 2-bit Blue).
-* Color $00 = transparent.
+* 256 colors, R3G3B2 format (3-bit Red, 3-bit Green, 2-bit Blue).
+* Color index $00: Transparent for sprites and text.
 
-Registers
-* $020810 - PALETTE_ADDR_REG (Write-only): Sets index (0-255), auto-increments.
-* $020811 - PALETTE_DATA_REG (Write-only): R3G3B2 color value.
+Palette Registers
+* $020810 - PALETTE_ADDR_REG (Write-only): Sets palette index (0-255), auto-increments after write to PALETTE_DATA_REG.
+* $020811 - PALETTE_DATA_REG (Write-only): 8-bit R3G3B2 color value (Bits 7-5: R, 4-2: G, 1-0: B).
 
 Default Palette
-* Initialized to standard palette (16 grays, 16 reds, etc., see Appendix).
+* Initialized to a standard 256-color palette (e.g., 16 grays, 16 reds, 16 greens, etc.).
+* Exact values in Appendix (e.g., index 0=$00 (transparent), index 1=$E0 (white)).
+
+Access
+* Write during VBLANK to avoid visual artifacts.
+* Example: Set PALETTE_ADDR_REG to $10, write $E0 to PALETTE_DATA_REG to set index 16 to white.
 
 ------------------------------------------------------------
 
 12. Text Rendering System
 
 Font
-* Built-in: 8x8 pixels, ASCII 32-126, codes 0-31/127-255 render as solid block.
-* Custom: VRAM ($017000-$017FFF, 256 bytes/character).
+* Built-in: 8x8 pixels, ASCII characters 32-126 (space to ~). Codes 0-31 and 127-255 render as a solid block.
+* Custom: Stored in VRAM ($017000-$017FFF, Page 2), 256 bytes per character (8x8 pixels, 8-bit color).
 
 Character Map
-* $021000-$02177F: 32x30 cells, 2 bytes each:
+* $021000-$02177F (Page 5): 32x30 grid (960 cells), 2 bytes per cell:
   - Byte 0: Character Code (0-255).
-  - Byte 1: Attributes (Bits 0-3: Foreground, Bits 4-7: Background, $00=transparent).
+  - Byte 1: Attributes:
+    - Bits 0-3: Foreground palette index (0-15).
+    - Bits 4-7: Background palette index (0-15, $00=transparent).
+* Out-of-range codes (beyond font): Render as solid block (index 127).
 
-Registers
-* $020840 - TEXT_CTRL_REG:
-  - Bit 0: Enable (1=on).
+Text Control Register
+* $020840 - TEXT_CTRL_REG (R/W, Page 4):
+  - Bit 0: Enable (1=text layer on).
   - Bit 1: Priority (1=in front of all sprites).
   - Bit 2: Blink (1=blink at 1Hz).
-  - Bit 3: Font Select (0=built-in, 1=custom).
+  - Bit 3: Font Select (0=built-in, 1=custom in VRAM).
+  - Bits 4-7: Reserved (write 0).
+
+Rendering
+* Text layer is 256x240 pixels (32x30 characters).
+* In 256x256 mode, bottom 16 lines unused unless scrolled.
+* Background transparent if attribute Bits 4-7=$00.
 
 ------------------------------------------------------------
 
 13. Interrupt Handling
 
 Interrupt Sources
-* VBLANK: Triggered at frame start.
-* Timer: Programmable via $020860 - TIMER_CTRL_REG.
-* External: Gamepad button press edge detection.
+* VBLANK: Triggered at start of VBLANK (every frame, 60Hz).
+* Timer: Programmable via TIMER_CTRL_REG.
+* External: Gamepad button press/release edge detection.
 
-Registers
-* $020870 - INT_ENABLE_REG:
-  - Bit 0: VBLANK (1=enabled).
-  - Bit 1: Timer (1=enabled).
-  - Bit 2: External (1=enabled).
-* $020871 - INT_STATUS_REG (Read-clear): Bits indicate pending interrupts.
+Interrupt Registers
+* $020870 - INT_ENABLE_REG (R/W, Page 4):
+  - Bit 0: VBLANK enable (1=on).
+  - Bit 1: Timer enable (1=on).
+  - Bit 2: External enable (1=on).
+  - Bits 3-7: Reserved (write 0).
+* $020871 - INT_STATUS_REG (Read-clear, Page 4):
+  - Bit 0: VBLANK pending (1=active).
+  - Bit 1: Timer pending (1=active).
+  - Bit 2: External pending (1=active).
+  - Bits 3-7: Reserved (read 0).
+* $020860 - TIMER_CTRL_REG (R/W, Page 4):
+  - Bits 0-3: Prescaler (0-15, divides 5MHz clock).
+  - Bit 4: Enable (1=timer running).
+  - Bits 5-7: Reserved (write 0).
 
 Interrupt Vectors
-* $FFFC-$FFFD: Reset vector.
-* $FFFA-$FFFB: NMI (VBLANK).
-* $FFF8-$FFF9: IRQ (Timer/External).
+* $FFFC-$FFFD: Reset vector (16-bit logical address).
+* $FFFA-$FFFB: Non-Maskable Interrupt (NMI, VBLANK).
+* $FFF8-$FFF9: Interrupt Request (IRQ, Timer/External).
 
-Behavior
-* Interrupts push PC and F to stack, set I flag, jump to vector.
-* RTI restores state.
-* HLT interrupted if I=0.
+Interrupt Behavior
+* When triggered (and I=0 in Flag Register):
+  1. Push PC (high byte, low byte) to stack.
+  2. Push Flag Register to stack.
+  3. Set I flag (disable interrupts).
+  4. Jump to vector (NMI or IRQ).
+* RTI instruction restores PC and flags from stack.
+* Priority: VBLANK (NMI) > Timer > External.
+* HLT instruction: CPU halts until interrupt (if I=0) or reset.
+
+Example
+* VBLANK interrupt: Enable via INT_ENABLE_REG Bit 0=1, ISR at $FFFA-$FFFB updates VRAM.
 
 ------------------------------------------------------------
 
 14. Error Handling and Edge Cases
 
-* Invalid Cartridge: If magic number or checksum fails, halt at $0000 or display "Invalid Cartridge".
-* Undefined Opcodes: Treated as NOP (2 cycles).
-* Unmapped Memory: Reads return $FF, writes ignored.
-* Stack Overflow/Underflow: Wraps around $0100-$7FFF.
-* VRAM Writes During Display: Allowed, may cause artifacts unless in VBLANK.
+* Invalid Cartridge: If magic number ("FC8C") or checksum invalid, halt at $0000 (JMP $0000) or display "Invalid Cartridge" on text layer.
+* Undefined Opcodes: Treated as NOP (2 cycles, no effect).
+* Unmapped Memory Access:
+  - Reads: Return $FF.
+  - Writes: Ignored (no effect).
+* Stack Overflow/Underflow: SP wraps around $0100-$7FFF (e.g., $7FFF+1=$0100).
+* VRAM Writes During Active Display: Allowed, but may cause visual artifacts (tearing). Recommend VBLANK writes.
+* Sprite Limits: Exceeding 64 sprites or 8 per scanline ignores higher-numbered sprites (by Sprite ID).
+* Arithmetic Errors (e.g., division by zero): Not applicable (no divide instruction). ADC/SBC set flags appropriately.
+* Invalid PAGE_SELECT_REG Values: Bits 5-7 non-zero are ignored (treated as 0).
+* Reserved SFR Bits: Reads return 0, writes ignored.
 
 ------------------------------------------------------------
 
 15. List of Special Registers
 
 Address			Name				Description				Access
-$00FE			PAGE_SELECT_REG		Page Select Register			R/W, Page 0
-$020000-$0200FF		Screen Bounding Offsets	Per-column bottom offset		R/W, Page 4
-$020100			VRAM_FLAGS_REG		VRAM Control Flags			R/W, Page 4
-$020101			VRAM_SCROLL_X_REG	Fine Scroll X				R/W, Page 4
-$020102			VRAM_SCROLL_Y_REG	Fine Scroll Y				R/W, Page 4
-$020200-$0205FF		Sprite Attribute Table	Sprite entries (4 bytes)		R/W, Page 4
-$020600			GAMEPAD1_STATE_REG	Gamepad 1 button states			Read-only, Page 4
-$020601			GAMEPAD2_STATE_REG	Gamepad 2 button states			Read-only, Page 4
+$00FE			PAGE_SELECT_REG		Page Select (bits 0-4)			R/W, Page 0
+$020000-$0200FF		Screen Bounding Offsets	Per-column vertical offset		R/W, Page 4
+$020100			VRAM_FLAGS_REG		VRAM mirror/flip/coarse scroll		R/W, Page 4
+$020101			VRAM_SCROLL_X_REG	Fine horizontal scroll			R/W, Page 4
+$020102			VRAM_SCROLL_Y_REG	Fine vertical scroll			R/W, Page 4
+$020200-$0205FF		Sprite Attribute Table	Sprite entries (256 * 4 bytes)		R/W, Page 4
+$020600			GAMEPAD1_STATE_REG	Gamepad 1 buttons			Read-only, Page 4
+$020601			GAMEPAD2_STATE_REG	Gamepad 2 buttons			Read-only, Page 4
 $020602			INPUT_STATUS_REG	Controller connection status		Read-only, Page 4
-$020700-$020713		Audio Channel Registers	Freq, Vol, Wave, Ctrl (4 chans)		R/W, Page 4
-$0207F0			AUDIO_MASTER_VOL_REG	Master Volume				R/W, Page 4
-$0207F1			AUDIO_SYSTEM_CTRL_REG	Audio System Enable			R/W, Page 4
-$020800			SCREEN_CTRL_REG		Display Control				R/W, Page 4
-$020810			PALETTE_ADDR_REG	Palette Index				Write-only, Page 4
-$020811			PALETTE_DATA_REG	Palette Color Data			Write-only, Page 4
-$020820			FRAME_COUNT_LO_REG	Frame Counter Low			Read-only, Page 4
-$020821			FRAME_COUNT_HI_REG	Frame Counter High			Read-only, Page 4
-$020830			RAND_NUM_REG		Random Number Generator			R/W, Page 4
-$020840			TEXT_CTRL_REG		Text Layer Control			R/W, Page 4
-$020850			VSYNC_STATUS_REG	VSync Status				Read-only, Page 4
-$020860			TIMER_CTRL_REG		Timer Control				R/W, Page 4
-$020870			INT_ENABLE_REG		Interrupt Enable			R/W, Page 4
-$020871			INT_STATUS_REG		Interrupt Status			Read-clear, Page 4
-$021000-$02177F		Text Character Map	32x30 text cells (2 bytes)		R/W, Page 5
-$021800-$021B7F		Tilemap			32x30 tilemap (2 bytes)			R/W, Page 5
+$020700-$020704		CH1 Audio Registers	Freq, Vol, Wave, Ctrl (Channel 1)	R/W, Page 4
+$020705-$020709		CH2 Audio Registers	Freq, Vol, Wave, Ctrl (Channel 2)	R/W, Page 4
+$02070A-$02070E		CH3 Audio Registers	Freq, Vol, Wave, Ctrl (Channel 3)	R/W, Page 4
+$02070F-$020713		CH4 Audio Registers	Freq, Vol, Wave, Ctrl (Channel 4)	R/W, Page 4
+$0207F0			AUDIO_MASTER_VOL_REG	Master audio volume			R/W, Page 4
+$0207F1			AUDIO_SYSTEM_CTRL_REG	Audio system enable			R/W, Page 4
+$020800			SCREEN_CTRL_REG		Display enable/mode			R/W, Page 4
+$020810			PALETTE_ADDR_REG	Palette index (auto-increment)		Write-only, Page 4
+$020811			PALETTE_DATA_REG	Palette color (R3G3B2)			Write-only, Page 4
+$020820			FRAME_COUNT_LO_REG	Frame counter low byte			Read-only, Page 4
+$020821			FRAME_COUNT_HI_REG	Frame counter high byte			Read-only, Page 4
+$020830			RAND_NUM_REG		Pseudo-random number			R/W, Page 4
+$020840			TEXT_CTRL_REG		Text layer enable/attributes		R/W, Page 4
+$020850			VSYNC_STATUS_REG	VSync status (VBLANK, new frame)	Read-only, Page 4
+$020860			TIMER_CTRL_REG		Timer prescaler/enable			R/W, Page 4
+$020870			INT_ENABLE_REG		Interrupt enable (VBLANK, etc.)		R/W, Page 4
+$020871			INT_STATUS_REG		Interrupt status (read-clear)		Read-only, Page 4
+$021000-$02177F		Text Character Map	32x30 text cells (2 bytes each)		R/W, Page 5
+$021800-$021B7F		Tilemap			32x30 tilemap (2 bytes each)		R/W, Page 5
 
 ------------------------------------------------------------
 
 16. Glossary of Terms
 
-* ALU: Performs arithmetic/logic operations.
+* ALU: Arithmetic Logic Unit, performs CPU operations.
 * Cartridge Header: Metadata at $030000-$0300FF.
-* ISA: Defines CPU instructions and behavior.
-* Little Endian: LSB at lowest address.
-* PCM: Digital audio representation.
-* R3G3B2: 8-bit color format.
-* Sprite ID: 8-bit sprite pattern selector.
-* VBLANK: Vertical blanking interval.
-* VRAM: Video RAM for graphics.
+* ISA: Instruction Set Architecture, defines CPU instructions.
+* Little Endian: Least significant byte at lowest address.
+* PCM: Pulse Code Modulation, digital audio format.
+* R3G3B2: 8-bit color format (3-bit Red, 3-bit Green, 2-bit Blue).
+* SFR: Special Function Register, controls hardware.
+* Sprite ID: 8-bit identifier for sprite patterns.
+* VBLANK: Vertical blanking interval, non-visible frame period.
+* VRAM: Video RAM, stores graphics data.
 
 ------------------------------------------------------------
 
@@ -548,34 +633,85 @@ Creative Commons Attribution-ShareAlike 4.0 International (https://creativecommo
 
 18. Developing Games via Hex Editor
 
-* Tools: Hex editor (HxD, Hex Fiend), assembler (e.g., vasm for 6502-like ISA).
-* Process: Construct header, code, assets per Section 4, use opcodes from Section 5.
-* Debugging: Use emulator with memory inspection (e.g., FC-8 Emulator on GitHub).
+* Tools: Hex editor (e.g., HxD, Hex Fiend), assembler (e.g., vasm for 6502-like ISA).
+* Process:
+  1. Create cartridge header per Section 4.
+  2. Write machine code using opcodes from Section 5.
+  3. Add assets (sprites, sound, tilemaps) in cartridge ROM.
+  4. Test in emulator with debugging support.
+* Debugging:
+  - Use FC-8 Emulator (Section 21) with memory inspection, breakpoints, and register views.
+  - Monitor SFRs (e.g., VSYNC_STATUS_REG) for timing issues.
+* Recommended: Use assembler instead of hex editing for complex games to reduce errors.
 
 ------------------------------------------------------------
 
 19. FPGA Implementation Guidance
 
-* Clocking: 20MHz master, divide to 5MHz CPU, 5.03MHz pixel (256x240, 60Hz).
-* Video: VGA output, 320x262 total pixels (256x240 visible).
-* Audio: PWM output, 4-channel mixer.
-* Memory: BRAM for RAM/VRAM, external Flash for cartridge.
-* Debugging: Use ChipScope/SignalTap for on-chip analysis.
+* Clocking:
+  - Master Clock: 20MHz.
+  - CPU Clock: 5MHz (divide master by 4).
+  - Pixel Clock: 5.03MHz (256x240 at 60Hz, derived from master).
+  - Audio Clock: 1MHz (for PWM output).
+* Video Output:
+  - Format: VGA, 320x262 total pixels (256x240 visible).
+  - Timing: 31.77µs per scanline, 16.67ms per frame.
+  - Sync: Horizontal/vertical sync signals per VGA standard.
+* Audio Output:
+  - Format: PWM, 4-channel mixer.
+  - Resolution: 8-bit per channel, 1MHz sample rate.
+* Memory:
+  - BRAM: 32 KiB Fixed RAM, 64 KiB VRAM, 8 KiB SFRs.
+  - External Flash: 832 KiB cartridge ROM.
+* Architecture:
+  - CPU: 8-bit core with fetch-decode-execute pipeline.
+  - Video: Scanline buffer for VRAM/sprite rendering.
+  - Audio: 4-channel waveform generator with PWM output.
+* Debugging:
+  - Use ChipScope/SignalTap for on-chip signal analysis.
+  - Expose PC, registers, and SFRs via debug interface.
+* Reference: Implement state machines for CPU, video, and audio based on Section 5, 9, and 8.
 
 ------------------------------------------------------------
 
 20. Example Programs and Tutorials
 
-* Example 1: Scrolling Tilemap (sets up tilemap, scrolls via VRAM_SCROLL_X/Y).
-* Example 2: Sound Playback (plays melody using Channel 1).
-* Tutorial: Building a platformer (header setup, game loop, sprite movement).
+* Example 1: Display a Single Sprite
+  - Initializes SCREEN_CTRL_REG, sets sprite in Sprite Attribute Table, displays at (128, 120).
+* Example 2: Scrolling Tilemap
+  - Configures tilemap mode, loads 8x8 tiles, scrolls via VRAM_SCROLL_X/Y.
+* Example 3: Sound Playback
+  - Plays a melody on Channel 1 using square wave, adjusts frequency.
+* Tutorial: Building a Platformer
+  - Steps: Set up cartridge header, initialize system, create game loop, handle input, move sprites, scroll tilemap.
+  - Includes sample code for collision detection and score display.
+* Source Code: Available in FC-8 Emulator repository (Section 21).
 
 ------------------------------------------------------------
 
 21. Community and Ecosystem Resources
 
-* GitHub: github.com/fc8-community (emulators, tools).
-* Forums: retrodev.com/forums/fc8 (discussion, tutorials).
-* Tools: FC-8 Emulator, vasm assembler, custom sprite editor.
+* GitHub: github.com/fc8-community (FC-8 Emulator, assemblers, tools).
+* Forums: retrodev.com/forums/fc8 (tutorials, Q&A, project showcases).
+* Tools:
+  - FC-8 Emulator: Open-source, supports debugging (breakpoints, memory dumps).
+  - vasm: Assembler for FC-8’s 6502-like ISA.
+  - Sprite Editor: Custom tool for creating 16x16 sprites.
+* Documentation: Community wikis on GitHub for advanced topics (e.g., optimizing game loops).
+* Events: Retro game jams hosted on retrodev.com, encouraging FC-8 projects.
+
+------------------------------------------------------------
+
+Appendix: Default Palette (Sample)
+
+Index	Color (R3G3B2)	Description
+$00	$00		Transparent
+$01	$E0		White (R=7, G=7, B=3)
+$02	$1C		Black (R=0, G=0, B=0)
+$03	$24		Red (R=4, G=0, B=0)
+...	...		...
+$FF	$DB		Light Gray (R=6, G=6, B=2)
+
+* Full 256-color table available in FC-8 Emulator documentation.
 
 ------------------------------------------------------------
