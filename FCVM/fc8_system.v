@@ -5,6 +5,12 @@ module fc8_system (
     input wire master_clk,
     input wire master_rst_n,
 
+    // Gamepad Inputs (for testbench initially)
+    input wire [7:0] tb_gamepad1_data,
+    input wire [7:0] tb_gamepad2_data,
+    input wire       tb_gamepad1_connected,
+    input wire       tb_gamepad2_connected,
+
     output wire cpu_dummy_output
 );
 
@@ -78,8 +84,21 @@ module fc8_system (
     wire [7:0]  graphics_current_col_x_to_sfr;
 
     // Graphics <-> SFR Block Interface (for Tilemap Definition RAM access by Graphics)
-    wire [11:0] graphics_tilemap_def_addr_to_sfr;
+    wire [11:0] graphics_tilemap_def_addr_to_sfr; // Existing for tilemap
     wire [7:0]  sfr_tilemap_def_data_to_graphics;
+
+    // Graphics <-> SFR Block Interface (for Text Character Map data read by Graphics) - New
+    wire [10:0] graphics_text_map_addr_to_sfr;
+    wire [7:0]  sfr_text_char_map_data_to_graphics;
+
+    // SFR Block <-> Audio Module Interface (New)
+    wire [7:0] sfr_ch1_freq_lo_to_audio, sfr_ch1_freq_hi_to_audio, sfr_ch1_vol_env_to_audio, sfr_ch1_wave_duty_to_audio, sfr_ch1_ctrl_to_audio;
+    wire [7:0] sfr_ch2_freq_lo_to_audio, sfr_ch2_freq_hi_to_audio, sfr_ch2_vol_env_to_audio, sfr_ch2_wave_duty_to_audio, sfr_ch2_ctrl_to_audio;
+    wire [7:0] sfr_ch3_freq_lo_to_audio, sfr_ch3_freq_hi_to_audio, sfr_ch3_vol_env_to_audio, sfr_ch3_wave_duty_to_audio, sfr_ch3_ctrl_to_audio;
+    wire [7:0] sfr_ch4_freq_lo_to_audio, sfr_ch4_freq_hi_to_audio, sfr_ch4_vol_env_to_audio, sfr_ch4_wave_duty_to_audio, sfr_ch4_ctrl_to_audio;
+    wire [7:0] sfr_audio_master_vol_to_audio;
+    wire       sfr_audio_system_enable_to_audio;
+    wire [7:0] audio_pwm_out_from_audio; // Output from fc8_audio
 
     // Graphics <-> Sprite Engine Interface
     wire [7:0]  graphics_vram_pixel_color_to_sprite; // Background pixel from Graphics
@@ -159,7 +178,26 @@ module fc8_system (
         .sfr_int_enable_vblank_out(sfr_int_enable_vblank),.sfr_int_enable_timer_out(sfr_int_enable_timer),.sfr_int_enable_external_out(sfr_int_enable_external),
         .sfr_timer_prescaler_out(sfr_timer_prescaler),.sfr_timer_enable_out(sfr_timer_enable),
         .sfr_clear_vblank_pending_out(sfr_clear_vblank_pending),.sfr_clear_timer_pending_out(sfr_clear_timer_pending),.sfr_clear_external_pending_out(sfr_clear_external_pending),
-        .ic_vblank_pending_in(ic_vblank_pending_to_sfr),.ic_timer_pending_in(ic_timer_pending_to_sfr),.ic_external_pending_in(ic_external_pending_to_sfr)
+        .ic_vblank_pending_in(ic_vblank_pending_to_sfr),.ic_timer_pending_in(ic_timer_pending_to_sfr),.ic_external_pending_in(ic_external_pending_to_sfr),
+        // Gamepad connections
+        .gamepad1_data_in(tb_gamepad1_data),
+        .gamepad2_data_in(tb_gamepad2_data),
+        .gamepad1_connected_in(tb_gamepad1_connected),
+        .gamepad2_connected_in(tb_gamepad2_connected),
+        // Audio SFR outputs
+        .sfr_ch1_freq_lo_out(sfr_ch1_freq_lo_to_audio), .sfr_ch1_freq_hi_out(sfr_ch1_freq_hi_to_audio),
+        .sfr_ch1_vol_env_out(sfr_ch1_vol_env_to_audio), .sfr_ch1_wave_duty_out(sfr_ch1_wave_duty_to_audio), .sfr_ch1_ctrl_out(sfr_ch1_ctrl_to_audio),
+        .sfr_ch2_freq_lo_out(sfr_ch2_freq_lo_to_audio), .sfr_ch2_freq_hi_out(sfr_ch2_freq_hi_to_audio),
+        .sfr_ch2_vol_env_out(sfr_ch2_vol_env_to_audio), .sfr_ch2_wave_duty_out(sfr_ch2_wave_duty_to_audio), .sfr_ch2_ctrl_out(sfr_ch2_ctrl_to_audio),
+        .sfr_ch3_freq_lo_out(sfr_ch3_freq_lo_to_audio), .sfr_ch3_freq_hi_out(sfr_ch3_freq_hi_to_audio),
+        .sfr_ch3_vol_env_out(sfr_ch3_vol_env_to_audio), .sfr_ch3_wave_duty_out(sfr_ch3_wave_duty_to_audio), .sfr_ch3_ctrl_out(sfr_ch3_ctrl_to_audio),
+        .sfr_ch4_freq_lo_out(sfr_ch4_freq_lo_to_audio), .sfr_ch4_freq_hi_out(sfr_ch4_freq_hi_to_audio),
+        .sfr_ch4_vol_env_out(sfr_ch4_vol_env_to_audio), .sfr_ch4_wave_duty_out(sfr_ch4_wave_duty_to_audio), .sfr_ch4_ctrl_out(sfr_ch4_ctrl_to_audio),
+        .sfr_audio_master_vol_out(sfr_audio_master_vol_to_audio),
+        .sfr_audio_system_enable_out(sfr_audio_system_enable_to_audio),
+        // Text map RAM interface with Graphics
+        .graphics_text_map_addr_in(graphics_text_map_addr_to_sfr),
+        .sfr_text_char_map_data_out(sfr_text_char_map_data_to_graphics)
     );
 
     fc8_vram u_vram (
@@ -179,12 +217,55 @@ module fc8_system (
         .sprite_final_pixel_color_in(sprite_final_pixel_color_to_graphics), // Input from Sprite Engine
         .vram_data_in(vram_data_to_graphics), .vram_addr_out(graphics_vram_addr_out),
         .tilemap_def_addr_out(graphics_tilemap_def_addr_to_sfr), .tilemap_def_data_in(sfr_tilemap_def_data_to_graphics),
+        .text_map_addr_out(graphics_text_map_addr_to_sfr), .text_map_data_in(sfr_text_char_map_data_to_graphics), // New ports for text map
         .in_vblank_status(graphics_in_vblank_from_graphics), .new_frame_status(graphics_new_frame_from_graphics),
         .current_screen_column_x_out(graphics_current_col_x_to_sfr),
-        .current_scanline_out(graphics_current_scanline_to_sprite), // Output to Sprite Engine
-        .h_coord_out(graphics_h_coord_to_sprite)                    // Output to Sprite Engine
+        .current_scanline_out(graphics_current_scanline_to_sprite),
+        .h_coord_out(graphics_h_coord_to_sprite)
         // VGA outputs are internal for now
     );
+
+    fc8_audio u_audio_system (
+        .clk(master_clk), // Or a specific audio_clk if derived and available
+        .rst_n(master_rst_n),
+
+        // Channel 1 Inputs
+        .sfr_ch1_freq_lo_in(sfr_ch1_freq_lo_to_audio),
+        .sfr_ch1_freq_hi_in(sfr_ch1_freq_hi_to_audio),
+        .sfr_ch1_vol_env_in(sfr_ch1_vol_env_to_audio),
+        .sfr_ch1_wave_duty_in(sfr_ch1_wave_duty_to_audio),
+        .sfr_ch1_ctrl_in(sfr_ch1_ctrl_to_audio),
+
+        // Channel 2 Inputs
+        .sfr_ch2_freq_lo_in(sfr_ch2_freq_lo_to_audio),
+        .sfr_ch2_freq_hi_in(sfr_ch2_freq_hi_to_audio),
+        .sfr_ch2_vol_env_in(sfr_ch2_vol_env_to_audio),
+        .sfr_ch2_wave_duty_in(sfr_ch2_wave_duty_to_audio),
+        .sfr_ch2_ctrl_in(sfr_ch2_ctrl_to_audio),
+
+        // Channel 3 Inputs
+        .sfr_ch3_freq_lo_in(sfr_ch3_freq_lo_to_audio),
+        .sfr_ch3_freq_hi_in(sfr_ch3_freq_hi_to_audio),
+        .sfr_ch3_vol_env_in(sfr_ch3_vol_env_to_audio),
+        .sfr_ch3_wave_duty_in(sfr_ch3_wave_duty_to_audio),
+        .sfr_ch3_ctrl_in(sfr_ch3_ctrl_to_audio),
+
+        // Channel 4 Inputs
+        .sfr_ch4_freq_lo_in(sfr_ch4_freq_lo_to_audio),
+        .sfr_ch4_freq_hi_in(sfr_ch4_freq_hi_to_audio),
+        .sfr_ch4_vol_env_in(sfr_ch4_vol_env_to_audio),
+        .sfr_ch4_wave_duty_in(sfr_ch4_wave_duty_to_audio),
+        .sfr_ch4_ctrl_in(sfr_ch4_ctrl_to_audio),
+
+        // Global Audio Control Inputs
+        .sfr_audio_master_vol_in(sfr_audio_master_vol_to_audio),
+        .sfr_audio_system_enable_in(sfr_audio_system_enable_to_audio),
+
+        // Audio Output
+        .audio_out_pwm(audio_pwm_out_from_audio) // Connect to a top-level output or test signal
+    );
+
+    // fc8_audio u_audio ( /* Placeholder for audio module connections */ ); // Original placeholder removed
 
     fc8_sprite_engine u_sprite_engine (
         .clk_pixel(clk_pixel), .rst_n(master_rst_n),

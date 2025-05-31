@@ -165,8 +165,8 @@
 // Jump / Subroutine
 `define OP_JMP_ABS  8'h4C // JMP $abs
 // `define OP_JMP_IND  8'h6C // JMP ($ind) - Not requested yet
-// `define OP_JSR_ABS  8'h20 // JSR $abs - Not requested yet
-// `define OP_RTS      8'h60 // RTS - Not requested yet
+`define OP_JSR_ABS  8'h20 // JSR $abs
+`define OP_RTS_IMP  8'h60 // RTS
 
 // Stack Operations
 `define OP_PHA      8'h48 // PHA (Push Accumulator)
@@ -177,7 +177,35 @@
 // System
 `define OP_BRK      8'h00 // BRK (Force Interrupt)
 `define OP_RTI      8'h40 // RTI (Return from Interrupt)
-`define OP_HLT      8'h02 // HLT (Halt CPU - not fully implemented yet, treat as NOP for now)
+// `define OP_HLT      8'h02 // HLT (Halt CPU - not fully implemented yet, treat as NOP for now) // Will be replaced
+
+// New Opcodes for Phase 1
+// `define OP_JSR_ABS  8'h20 // Already defined above
+// `define OP_RTS_IMP  8'h60 // Already defined above
+`define OP_TAX_IMP  8'hAA
+`define OP_TAY_IMP  8'hA8
+`define OP_TSX_IMP  8'hBA
+`define OP_TXA_IMP  8'h8A
+`define OP_TXS_IMP  8'h9A
+`define OP_TYA_IMP  8'h98
+`define OP_PHX_IMP  8'hDA
+`define OP_PHY_IMP  8'h5A
+`define OP_PLX_IMP  8'hFA
+`define OP_PLY_IMP  8'h7A
+`define OP_HLT_IMP  8'h02
+
+// New Opcodes for Phase 2
+`define OP_ASL_ZP   8'h06
+`define OP_ASL_ABS  8'h0E
+`define OP_LSR_ZP   8'h46
+`define OP_LSR_ABS  8'h4E
+`define OP_ROL_ZP   8'h26
+// ROL ABS is not in spec table
+`define OP_ROR_ZP   8'h66
+// ROR ABS is not in spec table
+`define OP_BIT_ZP   8'h24
+`define OP_BIT_ABS  8'h2C
+`define OP_JMP_IND  8'h6C
 
 
 // --- Interrupt Vectors ---
@@ -215,8 +243,46 @@
 `define VSYNC_STATUS_REG_ADDR       16'h0850 // $020850
 `define TIMER_CTRL_REG_ADDR         16'h0860 // $020860
 // ... other timer regs ...
+`define TEXT_CTRL_REG_ADDR        16'h0840 // As per Spec Sec 12
 `define INT_ENABLE_REG_ADDR         16'h0870 // $020870
 `define INT_STATUS_REG_ADDR         16'h0871 // $020871
 // ... other interrupt regs ...
 
-// Audio registers would also go here, e.g. $020C00 - $020FF7
+// Audio SFR Addresses (Offsets within SFR Page 4, assuming base $020000)
+`define CH1_FREQ_LO_REG_ADDR      16'h0700
+`define CH1_FREQ_HI_REG_ADDR      16'h0701
+`define CH1_VOL_ENV_REG_ADDR      16'h0702
+`define CH1_WAVE_DUTY_REG_ADDR    16'h0703
+`define CH1_CTRL_REG_ADDR         16'h0704
+
+`define CH2_FREQ_LO_REG_ADDR      16'h0705
+`define CH2_FREQ_HI_REG_ADDR      16'h0706
+`define CH2_VOL_ENV_REG_ADDR      16'h0707
+`define CH2_WAVE_DUTY_REG_ADDR    16'h0708
+`define CH2_CTRL_REG_ADDR         16'h0709
+
+`define CH3_FREQ_LO_REG_ADDR      16'h070A
+`define CH3_FREQ_HI_REG_ADDR      16'h070B
+`define CH3_VOL_ENV_REG_ADDR      16'h070C
+`define CH3_WAVE_DUTY_REG_ADDR    16'h070D
+`define CH3_CTRL_REG_ADDR         16'h070E
+
+`define CH4_FREQ_LO_REG_ADDR      16'h070F
+`define CH4_FREQ_HI_REG_ADDR      16'h0710
+`define CH4_VOL_ENV_REG_ADDR      16'h0711
+`define CH4_WAVE_DUTY_REG_ADDR    16'h0712
+`define CH4_CTRL_REG_ADDR         16'h0713
+
+`define AUDIO_MASTER_VOL_REG_ADDR 16'h07F0
+`define AUDIO_SYSTEM_CTRL_REG_ADDR 16'h07F1
+
+// Text Character Map RAM (Offsets within SFR Page 4, assuming base $020000)
+// Spec Sec 12: $021000-$02177F. Offset $1000 - $177F from page start.
+`define TEXT_CHAR_MAP_PAGE4_START_OFFSET 16'h1000
+`define TEXT_CHAR_MAP_PAGE4_END_OFFSET   16'h177F
+`define TEXT_CHAR_MAP_SIZE_BYTES         1920 // 32x30 cells * 2 bytes/cell
+
+// Gamepad input enable (placeholder for actual input connection)
+// These are not SFR addresses but control signals for testing
+// `define GAMEPAD1_DATA_IN_ADDR        16'hXXXX // Not an SFR to write to
+// `define GAMEPAD2_DATA_IN_ADDR        16'hYYYY // Not an SFR to write to
