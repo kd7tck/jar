@@ -5,13 +5,32 @@
 // It is `no_std` compatible, relying only on the `alloc` crate for dynamic types.
 //
 // To use, copy this file into your project (e.g., as `src/jar_rustinclude.rs`)
-// and bring it into scope with `mod jar_rustinclude;`. Then you can call
-// `jar_rustinclude::preprocess`.
+// and bring it into scope with `mod jar_rustinclude;`.
+//
+// Then you can create a `Processor` and use it to preprocess your files.
+//
+// # Example (`std` feature)
+//
+// ```no_run
+// // In your project's `main.rs` or `lib.rs`, include this file as a module:
+// mod jar_rustinclude;
+//
+// fn run() {
+//     let source = jar_rustinclude::Processor::new()
+//         .add_path("shaders")
+//         .add_path("shaders/common")
+//         .inject("#version 450 core\n#define APP\n")
+//         .preprocess_file("shaders/main.glsl")
+//         .unwrap();
+//
+//     println!("{}", source);
+// }
+// ```
 //
 // Public domain / MIT / Apache-2.0 -- your choice.
 // Author: 2025, community contribution.
 
-#![no_std]
+#![cfg_attr(not(feature = "std"), no_std)]
 #![allow(dead_code)]
 
 extern crate alloc;
@@ -49,85 +68,191 @@ impl fmt::Display for Error {
     }
 }
 
-/// Configuration for the preprocessing.
-#[derive(Clone)]
-pub struct Config<'a> {
-    /// Semicolon-separated include search directories.
-    pub search_paths: &'a str,
-    /// Code to inject at the beginning of the output.
-    pub inject: Option<&'a str>,
-    /// The filename to use for the initial input string, for error reporting and relative includes.
-    pub virtual_filename: &'a str,
+/// A preprocessor for resolving `#include` directives in text files.
+///
+/// This struct provides a simple builder-style interface for configuring the preprocessing options.
+#[derive(Clone, Default)]
+pub struct Processor<'a> {
+    search_paths: Vec<&'a str>,
+    inject: Option<&'a str>,
+}
+
+impl<'a> Processor<'a> {
+    /// Creates a new, empty `Processor`.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Adds a single search path.
+    pub fn add_path(mut self, path: &'a str) -> Self {
+        self.search_paths.push(path);
+        self
+    }
+
+    /// Adds multiple search paths from a semicolon-separated string.
+    pub fn add_paths(mut self, paths: &'a str) -> Self {
+        self.search_paths
+            .extend(paths.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()));
+        self
+    }
+
+    /// Sets the code to be injected at the beginning of the output.
+    pub fn inject(mut self, inject: &'a str) -> Self {
+        self.inject = Some(inject);
+        self
+    }
+}
+
+#[cfg(feature = "std")]
+impl<'a> Processor<'a> {
+    /// Preprocesses a file from the filesystem.
+    ///
+    /// This is a convenience method that uses `std::fs::read_to_string` for file loading.
+    /// It is only available when the `std` feature is enabled.
+    pub fn preprocess_file(&self, path: &str) -> Result<String> {
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| Error::new(&e.to_string(), path, 0))?;
+        let file_loader = |p: &str| std::fs::read_to_string(p).ok();
+        self.preprocess(&content, path, file_loader)
+    }
+}
+
+impl<'a> Processor<'a> {
+    /// Preprocesses an input string, resolving `#include` directives.
+    ///
+    /// This is the main entry point of the library. It takes an input string, a "virtual"
+    /// filename for error reporting, and a file loader closure. The file loader is responsible
+    /// for taking a path and returning the content of the file as an `Option<String>`.
+    ///
+    /// # Example (`no_std` context)
+    ///
+    /// ```no_run
+    /// # mod jar_rustinclude {
+    /// #     #![cfg_attr(not(feature = "std"), no_std)]
+    /// #     #![allow(dead_code)]
+    /// #     extern crate alloc;
+    /// #     use alloc::format;
+    /// #     use alloc::string::{String, ToString};
+    /// #     use alloc::vec::Vec;
+    /// #     use core::cell::RefCell;
+    /// #     use core::fmt::{self, Write};
+    /// #     pub type Result<T> = core::result::Result<T, Error>;
+    /// #     #[derive(Debug, Clone)]
+    /// #     pub struct Error {
+    /// #         pub message: String,
+    /// #         pub file: String,
+    /// #         pub line: usize,
+    /// #     }
+    /// #     impl Error {
+    /// #         fn new(msg: &str, file: &str, line: usize) -> Self {
+    /// #             Self {
+    /// #                 message: msg.to_string(),
+    /// #                 file: file.to_string(),
+    /// #                 line,
+    /// #             }
+    /// #         }
+    /// #     }
+    /// #     impl fmt::Display for Error {
+    /// #         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    /// #             write!(f, "{}:{}: error: {}", self.file, self.line, self.message)
+    /// #         }
+    /// #     }
+    /// #     #[derive(Clone, Default)]
+    /// #     pub struct Processor<'a> {
+    /// #         search_paths: Vec<&'a str>,
+    /// #         inject: Option<&'a str>,
+    /// #     }
+    /// #     impl<'a> Processor<'a> {
+    /// #         pub fn new() -> Self {
+    /// #             Self::default()
+    /// #         }
+    /// #         pub fn add_path(mut self, path: &'a str) -> Self {
+    /// #             self.search_paths.push(path);
+    /// #             self
+    /// #         }
+    /// #         pub fn add_paths(mut self, paths: &'a str) -> Self {
+    /// #             self.search_paths.extend(paths.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()));
+    /// #             self
+    /// #         }
+    /// #         pub fn inject(mut self, inject: &'a str) -> Self {
+    /// #             self.inject = Some(inject);
+    /// #             self
+    /// #         }
+    /// #     }
+    /// #     impl<'a> Processor<'a> {
+    /// #         pub fn preprocess<F>(
+    /// #             &self,
+    /// #             input: &str,
+    /// #             virtual_filename: &str,
+    /// #             mut load_file: F,
+    /// #         ) -> Result<String>
+    /// #         where
+    /// #             F: FnMut(&str) -> Option<String>,
+    /// #         {
+    /// #             // Implementation...
+    /// #             Ok(String::new())
+    /// #         }
+    /// #     }
+    /// # }
+    /// use jar_rustinclude::Processor;
+    /// use std::collections::HashMap;
+    ///
+    /// let mut file_system = HashMap::new();
+    /// file_system.insert("common.glsl", "const float PI = 3.14159;");
+    ///
+    /// let file_loader = |path: &str| file_system.get(path).map(|s| s.to_string());
+    ///
+    /// let source = r#"
+    ///     #include "common.glsl"
+    ///     // ...
+    /// "#;
+    ///
+    /// let processed_source = Processor::new()
+    ///     .preprocess(source, "main.glsl", file_loader)
+    ///     .unwrap();
+    /// ```
+    pub fn preprocess<F>(
+        &self,
+        input: &str,
+        virtual_filename: &str,
+        mut load_file: F,
+    ) -> Result<String>
+    where
+        F: FnMut(&str) -> Option<String>,
+    {
+        INCLUDE_GUARD.with(|guard| guard.borrow_mut().clear());
+
+        let mut output = String::new();
+        if let Some(inject) = self.inject {
+            writeln!(&mut output, "{}", inject)
+                .map_err(|_| Error::new("failed to write inject", "", 0))?;
+        }
+
+        // Add initial #line directive for the main file.
+        writeln!(
+            &mut output,
+            "#line 1 \"{}\"",
+            escape_for_line_directive(virtual_filename)
+        )
+        .map_err(|_| Error::new("failed to write line directive", virtual_filename, 1))?;
+
+        process_lines(
+            input,
+            virtual_filename,
+            1,
+            &mut output,
+            self,
+            &mut load_file,
+        )?;
+
+        Ok(output)
+    }
 }
 
 thread_local! {
     static INCLUDE_GUARD: RefCell<Vec<String>> = RefCell::new(Vec::new());
 }
 
-/// Preprocesses an input string, resolving `#include` directives.
-///
-/// This is the main entry point of the library. It takes an input string, a configuration,
-/// and a file loader closure. The file loader is responsible for taking a path and
-/// returning the content of the file as an `Option<String>`.
-///
-/// # Example
-/// ```no_run
-/// // In your project's `main.rs` or `lib.rs`, include this file as a module:
-/// mod jar_rustinclude;
-///
-/// fn run() {
-///     // In a `std` environment, you can use `std::fs` to load files.
-///     let file_loader = |path: &str| std::fs::read_to_string(path).ok();
-///
-///     let config = jar_rustinclude::Config {
-///         search_paths: "shaders;shaders/common",
-///         inject: Some("#version 450 core\n#define APP\n"),
-///         virtual_filename: "main.glsl",
-///     };
-///
-///     let source = r#"
-///     #include "common.glsl"
-///
-///     void main() {
-///         gl_FragColor = vec4(1.0);
-///     }
-///     "#;
-///
-///     let processed_source = jar_rustinclude::preprocess(source, &config, file_loader).unwrap();
-///     println!("{}", processed_source);
-/// }
-/// ```
-pub fn preprocess<F>(input: &str, config: &Config<'_>, mut load_file: F) -> Result<String>
-where
-    F: FnMut(&str) -> Option<String>,
-{
-    INCLUDE_GUARD.with(|guard| guard.borrow_mut().clear());
-
-    let mut output = String::new();
-    if let Some(inject) = config.inject {
-        writeln!(&mut output, "{}", inject)
-            .map_err(|_| Error::new("failed to write inject", "", 0))?;
-    }
-
-    // Add initial #line directive for the main file.
-    writeln!(
-        &mut output,
-        "#line 1 \"{}\"",
-        escape_for_line_directive(config.virtual_filename)
-    )
-    .map_err(|_| Error::new("failed to write line directive", config.virtual_filename, 1))?;
-
-    process_lines(
-        input,
-        config.virtual_filename,
-        1,
-        &mut output,
-        config,
-        &mut load_file,
-    )?;
-
-    Ok(output)
-}
 
 /// Core recursive processor for file content.
 fn process_lines<F>(
@@ -135,7 +260,7 @@ fn process_lines<F>(
     current_file: &str,
     start_line: usize,
     output: &mut String,
-    config: &Config<'_>,
+    processor: &Processor,
     load_file: &mut F,
 ) -> Result<()>
 where
@@ -147,7 +272,7 @@ where
 
         if let Some(include_path) = parse_include(line) {
             let (resolved_path, file_content) =
-                find_and_load_include(include_path, current_file, config, load_file)
+                find_and_load_include(include_path, current_file, processor, load_file)
                     .map_err(|mut e| {
                         e.line = line_number;
                         e
@@ -173,7 +298,7 @@ where
             )
             .map_err(|_| Error::new("failed to write line directive", &resolved_path, 1))?;
 
-            process_lines(&file_content, &resolved_path, 1, output, config, load_file)?;
+            process_lines(&file_content, &resolved_path, 1, output, processor, load_file)?;
 
             // Return to the original file context.
             writeln!(
@@ -207,7 +332,7 @@ where
 fn find_and_load_include<'a, F>(
     include_path: &str,
     current_file: &str,
-    config: &Config<'a>,
+    processor: &Processor,
     load_file: &mut F,
 ) -> Result<(String, String)>
 where
@@ -222,11 +347,7 @@ where
     }
 
     // 2. Try each search path.
-    for dir in config.search_paths.split(';') {
-        let dir = dir.trim();
-        if dir.is_empty() {
-            continue;
-        }
+    for &dir in &processor.search_paths {
         let candidate = join_paths(dir, include_path);
         if let Some(content) = load_file(&candidate) {
             return Ok((candidate, content));
